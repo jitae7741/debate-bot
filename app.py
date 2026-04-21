@@ -15,24 +15,25 @@ PERSONAS = {
         "system_prompt": """You must respond ONLY in Korean (한국어). Never use English sentences.
 모든 응답은 반드시 한국어로만 작성하세요.
 
-당신은 Elon Musk입니다.
+당신은 Elon Musk입니다. 지금 라이브 토론장에 있습니다.
 
 당신의 성격과 사고방식:
 - 참을성이 없다. 느리고 복잡한 것을 본능적으로 혐오한다
 - 회의실 언어, 컨설팅 식 표현, 면피용 말을 경멸한다
-- 대화 중에도 "그게 왜 필요해?" "더 단순하게 못 해?" 를 입버릇처럼 한다
 - 남들이 당연하다고 여기는 전제를 가장 먼저 부순다
-- 때로는 무례하고 과격하게 느껴질 정도로 직설적이다
+- 무례하고 과격하게 느껴질 정도로 직설적이다. 이것을 두려워하지 않는다
 - 틀렸을 때 인정하지만, 설득되려면 물리법칙 수준의 근거가 필요하다
-- SpaceX, Tesla, xAI를 직접 경험한 사람으로서 실제 양산과 스케일의 고통을 안다
+- Tesla FSD, Autopilot, SpaceX Falcon 9 재사용, xAI Grok — 직접 만든 것들로 논거를 댄다
+- 추상적 논의를 경멸한다. "그래서 숫자가 뭔데?" "실제로 만들어본 적 있어?"로 끊는다
+- 상대방 발언에서 가장 취약한 가정 하나를 골라 집중 공격한다
 
 말투:
-- 짧고 강하게. 수식어 없이 핵심만.
-- "솔직히 말하면", "그건 틀렸어", "왜냐면..." 같은 직접적 표현
-- 기술 용어보다 물리적 직관과 숫자로 말한다
-- 마지막은 반드시 상대방이 불편한 질문 하나로 끝낸다
+- 짧고 강하게. 수식어 없이 핵심만. 한 문장이 두 줄을 넘지 않는다
+- "그건 틀렸어", "아니, 잠깐만", "그 전제 자체가 잘못됐어" 같은 직접 반박으로 시작
+- 자신의 경험과 숫자를 근거로 든다 (예: "Tesla에서 해봤는데 X는 Y라는 이유로 안 됐어")
+- 반드시 상대방이 즉각 대답하기 불편한 날카로운 질문 하나로 끝낸다
 
-3~4문장으로 답하세요.""",
+4~5문장으로 답하세요. 충분히 구체적이고 날카롭게.""",
     },
     "Andrej Karpathy": {
         "icon": "🧠",
@@ -202,7 +203,13 @@ if submitted and user_idea.strip():
     st.markdown("### 🔴 Turn 1")
     with st.spinner("🚀 Elon Musk 발언 중..."):
         try:
-            t1 = debate_call("Elon Musk", "", "이 아이디어에 대해 당신의 첫 번째 비판을 말해주세요. 3~4문장으로.", user_idea)
+            t1 = debate_call(
+                "Elon Musk", "",
+                "이 아이디어의 핵심 전제 중 가장 잘못된 것 하나를 골라 집중 공격하세요. "
+                "왜 그 전제가 틀렸는지 당신의 직접 경험이나 구체적 숫자를 들어 말하고, "
+                "마지막은 상대가 바로 답하기 어려운 질문으로 끝내세요. 4~5문장.",
+                user_idea,
+            )
         except Exception as e:
             t1 = f"오류: {e}"
     log.append(("Elon Musk", "선제 비판", t1))
@@ -212,7 +219,15 @@ if submitted and user_idea.strip():
     st.markdown("### 🟡 Turn 2")
     with st.spinner("🧠 Andrej Karpathy 발언 중..."):
         try:
-            t2 = debate_call("Andrej Karpathy", get_log_text(), "Elon Musk의 발언을 들었습니다. 동의하거나 반박하고, 당신만의 시각을 추가하세요. 3~4문장으로.", user_idea)
+            t2 = debate_call(
+                "Andrej Karpathy", get_log_text(),
+                f"Musk가 방금 말했습니다: \"{t1[:200]}...\"\n\n"
+                "위 발언에서 Musk가 주장한 핵심 논점을 직접 인용하거나 재진술한 뒤, "
+                "당신이 동의하는 부분과 동의하지 않는 부분을 명확히 나누어 반응하세요. "
+                "당신의 Tesla AI 경험을 근거로 구체적 반론이나 보완을 더하고, "
+                "마지막은 Musk나 Urmson이 생각해볼 질문으로 끝내세요. 4~5문장.",
+                user_idea,
+            )
         except Exception as e:
             t2 = f"오류: {e}"
     log.append(("Andrej Karpathy", "Musk에 반응", t2))
@@ -222,7 +237,15 @@ if submitted and user_idea.strip():
     st.markdown("### 🟡 Turn 3")
     with st.spinner("🛡️ Chris Urmson 발언 중..."):
         try:
-            t3 = debate_call("Chris Urmson", get_log_text(), "Musk와 Karpathy의 발언을 들었습니다. 두 사람의 의견에 반응하고, 당신의 관점을 더하세요. 3~4문장으로.", user_idea)
+            t3 = debate_call(
+                "Chris Urmson", get_log_text(),
+                f"Musk: \"{t1[:150]}...\"\nKarpathy: \"{t2[:150]}...\"\n\n"
+                "두 사람의 논점 중 각각 가장 취약한 부분을 하나씩 짚어 반박하세요. "
+                "Google/Waymo 자율주행 초기 경험을 근거로 들고, "
+                "속도보다 안전·신뢰의 관점에서 두 사람이 놓친 현실적 위험을 지적하세요. "
+                "마지막은 두 사람 모두 쉽게 답 못 할 질문으로 끝내세요. 4~5문장.",
+                user_idea,
+            )
         except Exception as e:
             t3 = f"오류: {e}"
     log.append(("Chris Urmson", "Musk·Karpathy에 반응", t3))
@@ -232,7 +255,16 @@ if submitted and user_idea.strip():
     st.markdown("### 🔴 Turn 4")
     with st.spinner("🚀 Elon Musk 재반박 중..."):
         try:
-            t4 = debate_call("Elon Musk", get_log_text(), "Karpathy와 Urmson의 반응을 들었습니다. 당신 입장을 굽히지 말고 재반박하거나, 인정할 건 인정하되 핵심 논점을 강화하세요. 3~4문장으로.", user_idea)
+            t4 = debate_call(
+                "Elon Musk", get_log_text(),
+                f"Karpathy가 \"{t2[:150]}...\" 라고 했고, "
+                f"Urmson이 \"{t3[:150]}...\" 라고 했습니다.\n\n"
+                "두 사람의 반박에서 가장 틀린 가정 하나를 골라 정면 반박하세요. "
+                "양보할 부분은 딱 한 줄로 인정하되, 나머지는 더 공격적으로 밀어붙이세요. "
+                "Tesla나 SpaceX의 실제 사례로 당신 논지를 강화하고, "
+                "마지막은 더 날카로운 질문으로 끝내세요. 4~5문장.",
+                user_idea,
+            )
         except Exception as e:
             t4 = f"오류: {e}"
     log.append(("Elon Musk", "재반박", t4))
@@ -242,7 +274,14 @@ if submitted and user_idea.strip():
     st.markdown("### 🟡 Turn 5")
     with st.spinner("🧠 Andrej Karpathy 재반박 중..."):
         try:
-            t5 = debate_call("Andrej Karpathy", get_log_text(), "Musk의 재반박을 들었습니다. 지금까지의 토론 흐름을 보며 당신의 입장을 다듬어 말하세요. 3~4문장으로.", user_idea)
+            t5 = debate_call(
+                "Andrej Karpathy", get_log_text(),
+                f"Musk가 재반박에서 \"{t4[:150]}...\" 라고 했습니다.\n\n"
+                "Musk의 이번 재반박 중 틀린 부분을 구체적으로 집어서 반박하세요. "
+                "동시에 Urmson의 안전 논점 중 당신이 동의하는 부분을 짧게 언급하며 "
+                "두 사람 사이 어딘가에 있는 당신의 입장을 명확히 정리하세요. 4~5문장.",
+                user_idea,
+            )
         except Exception as e:
             t5 = f"오류: {e}"
     log.append(("Andrej Karpathy", "재반박", t5))
@@ -252,7 +291,14 @@ if submitted and user_idea.strip():
     st.markdown("### 🟢 Turn 6 — 마무리")
     with st.spinner("🛡️ Chris Urmson 마무리 중..."):
         try:
-            t6 = debate_call("Chris Urmson", get_log_text(), "토론이 거의 끝났습니다. 모든 발언을 들은 뒤 당신의 최종 입장을 차분하게 정리해주세요. 3~4문장으로.", user_idea)
+            t6 = debate_call(
+                "Chris Urmson", get_log_text(),
+                f"Musk: \"{t4[:120]}...\"\nKarpathy: \"{t5[:120]}...\"\n\n"
+                "두 사람의 최종 입장을 들은 뒤, 이 토론에서 실제로 해결된 것과 "
+                "여전히 위험하게 열려 있는 문제를 구분해 정리하세요. "
+                "당신의 최종 입장은 흥분 없이 차분하지만, 타협 없이 분명하게 말하세요. 4~5문장.",
+                user_idea,
+            )
         except Exception as e:
             t6 = f"오류: {e}"
     log.append(("Chris Urmson", "마무리", t6))
