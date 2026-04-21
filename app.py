@@ -87,7 +87,7 @@ PERSONAS = {
     },
 }
 
-st.set_page_config(page_title="거물 토론", page_icon="🥊", layout="centered")
+st.set_page_config(page_title="테스트봇", page_icon="🥊", layout="centered")
 
 st.markdown("""
 <style>
@@ -242,7 +242,7 @@ for _key, _default in [
 
 
 # ── 메인 ──────────────────────────────────────────────
-st.markdown("# 🥊 거물 토론")
+st.markdown("# 🥊 테스트봇")
 st.caption("Musk → Karpathy → Urmson → Musk → Karpathy → Urmson → 에이스웍스 판결")
 
 with st.form("debate_form", clear_on_submit=True):
