@@ -128,7 +128,7 @@ with st.sidebar:
 
     mode = st.radio(
         "모드 선택",
-        ["😈 기본 비판봇", "🚗 자율주행 패널"],
+        ["😈 기본 비판봇", "🚗 자율주행 패널", "🥊 거물 토론"],
         index=0,
     )
 
@@ -143,6 +143,9 @@ with st.sidebar:
         for name, info in PERSONAS.items():
             st.markdown(f"{info['icon']} **{name}**  \n{info['title']}")
             st.markdown("")
+        if mode == "🥊 거물 토론":
+            st.markdown("---")
+            st.caption("Round 1: 개별 비판\nRound 2: 서로 반박\nRound 3: 최종 입장")
 
 
 def clean_response(text: str) -> str:
@@ -279,3 +282,127 @@ else:
 
         st.markdown("---")
         st.success("✅ 3명의 검토 완료 — 공통으로 지적된 부분이 핵심 리스크입니다.")
+
+
+# ── 거물 토론 ─────────────────────────────────────────
+elif mode == "🥊 거물 토론":
+    st.markdown("# 🥊 거물 토론")
+    st.caption("3라운드 토론 — 개별 비판 → 서로 반박 → 최종 입장")
+
+    with st.form("debate_form", clear_on_submit=True):
+        user_idea = st.text_area(
+            "자율주행 아이디어 / 전략 / 기술 접근",
+            height=120,
+            placeholder="예: HILS 테스트를 완전 자동화해서 개발 속도를 3배 높이려고 합니다...",
+        )
+        submitted = st.form_submit_button("🥊 토론 시작")
+
+    if submitted and user_idea.strip():
+        names = list(PERSONAS.keys())
+        round1 = {}
+
+        # ── Round 1: 개별 비판 ──
+        st.markdown("---")
+        st.markdown("### 🔴 Round 1 — 개별 비판")
+
+        for name, info in PERSONAS.items():
+            messages = [
+                {"role": "system", "content": info["system_prompt"]},
+                {"role": "user", "content": f"다음 자율주행 아이디어를 비판해주세요:\n\n{user_idea}"},
+            ]
+            with st.spinner(f"{info['icon']} {name} 비판 중..."):
+                try:
+                    round1[name] = call_groq(messages, temperature=0.75)
+                except Exception as e:
+                    round1[name] = f"오류: {e}"
+
+            color = info["color"]
+            st.markdown(
+                f'<div class="panel-card" style="border-left: 4px solid {color};">'
+                f'<div class="panel-name">{info["icon"]} {name}</div>'
+                f'<div class="panel-title">{info["title"]}</div>'
+                f'{round1[name]}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Round 2: 서로 반박 ──
+        st.markdown("---")
+        st.markdown("### 🟡 Round 2 — 서로 반박")
+
+        round2 = {}
+        for name, info in PERSONAS.items():
+            others = {n: v for n, v in round1.items() if n != name}
+            others_text = "\n\n".join(
+                f"[{n}의 의견]: {v}" for n, v in others.items()
+            )
+            rebuttal_prompt = f"""다음은 다른 두 전문가의 의견입니다:
+
+{others_text}
+
+당신의 관점에서 이들의 의견에 반박하거나 보완하세요.
+동의하는 부분이 있다면 인정하되, 당신만의 시각에서 새로운 논점을 추가하세요.
+3~5문장으로 답하세요."""
+
+            messages = [
+                {"role": "system", "content": info["system_prompt"]},
+                {"role": "user", "content": f"아이디어: {user_idea}\n\n{rebuttal_prompt}"},
+            ]
+            with st.spinner(f"{info['icon']} {name} 반박 중..."):
+                try:
+                    round2[name] = call_groq(messages, temperature=0.8)
+                except Exception as e:
+                    round2[name] = f"오류: {e}"
+
+            color = info["color"]
+            st.markdown(
+                f'<div class="panel-card" style="border-left: 4px solid {color};">'
+                f'<div class="panel-name">{info["icon"]} {name} — 반박</div>'
+                f'<div class="panel-title">{info["title"]}</div>'
+                f'{round2[name]}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Round 3: 최종 입장 ──
+        st.markdown("---")
+        st.markdown("### 🟢 Round 3 — 최종 입장")
+
+        all_debate = "\n\n".join(
+            f"[{n} Round1]: {round1[n]}\n[{n} Round2]: {round2[n]}"
+            for n in names
+        )
+
+        for name, info in PERSONAS.items():
+            final_prompt = f"""지금까지의 토론 내용입니다:
+
+{all_debate}
+
+토론을 마무리하며 당신의 최종 입장을 밝히세요.
+- 핵심 쟁점 한 줄 요약
+- 당신이 가장 중요하다고 생각하는 리스크 또는 개선 방향
+- 다른 전문가들과 끝까지 동의하지 않는 부분 (있다면)
+3~4문장으로 간결하게 마무리하세요."""
+
+            messages = [
+                {"role": "system", "content": info["system_prompt"]},
+                {"role": "user", "content": final_prompt},
+            ]
+            with st.spinner(f"{info['icon']} {name} 최종 입장 정리 중..."):
+                try:
+                    final = call_groq(messages, temperature=0.7)
+                except Exception as e:
+                    final = f"오류: {e}"
+
+            color = info["color"]
+            st.markdown(
+                f'<div class="panel-card" style="border-left: 4px solid {color};">'
+                f'<div class="panel-name">{info["icon"]} {name} — 최종 입장</div>'
+                f'<div class="panel-title">{info["title"]}</div>'
+                f'{final}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("---")
+        st.success("✅ 3라운드 토론 완료")
