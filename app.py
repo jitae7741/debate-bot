@@ -191,7 +191,7 @@ def clean_response(text: str) -> str:
 
 
 def call_groq(messages: list, temperature: float = 0.8) -> str:
-    client = Groq(api_key=GROQ_API_KEY, timeout=30.0)
+    client = Groq(api_key=GROQ_API_KEY)
     for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
         try:
             resp = client.chat.completions.create(
