@@ -192,13 +192,20 @@ def clean_response(text: str) -> str:
 
 def call_groq(messages: list, temperature: float = 0.8) -> str:
     client = Groq(api_key=GROQ_API_KEY)
-    resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=messages,
-        temperature=temperature,
-        max_tokens=1024,
-    )
-    return clean_response(resp.choices[0].message.content)
+    for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=600,
+            )
+            return clean_response(resp.choices[0].message.content)
+        except Exception as e:
+            if "429" in str(e) or "rate_limit" in str(e).lower():
+                continue
+            raise
+    raise RuntimeError("모든 모델 한도 초과. 내일 다시 시도하거나 Groq Dev 티어로 업그레이드하세요.")
 
 
 def render_card(name, label, content):
