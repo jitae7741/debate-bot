@@ -191,7 +191,7 @@ def clean_response(text: str) -> str:
 
 
 def call_groq(messages: list, temperature: float = 0.8) -> str:
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=GROQ_API_KEY, timeout=30.0)
     for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
         try:
             resp = client.chat.completions.create(
@@ -202,7 +202,8 @@ def call_groq(messages: list, temperature: float = 0.8) -> str:
             )
             return clean_response(resp.choices[0].message.content)
         except Exception as e:
-            if "429" in str(e) or "rate_limit" in str(e).lower():
+            err = str(e).lower()
+            if "429" in str(e) or "rate_limit" in err or "quota" in err:
                 continue
             raise
     raise RuntimeError("모든 모델 한도 초과. 내일 다시 시도하거나 Groq Dev 티어로 업그레이드하세요.")
