@@ -242,7 +242,7 @@ Never use Chinese characters, English sentences, or any other language.
 
 
 # ── 자율주행 패널 ─────────────────────────────────────
-else:
+elif mode == "🚗 자율주행 패널":
     st.markdown("# 🚗 자율주행 거물 패널")
     st.caption("자율주행 아이디어를 입력하면 업계 거물 3명이 각자의 관점으로 검증합니다.")
 
