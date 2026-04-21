@@ -2,10 +2,12 @@
 
 import os
 import re
+import json
 import streamlit as st
 from groq import Groq
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+VOTES_FILE = "votes_history.json"
 
 PERSONAS = {
     "Elon Musk": {
@@ -108,6 +110,26 @@ st.markdown("""
     background-color: #cc2e25 !important;
     color: white !important;
   }
+  .vote-btn > button {
+    background-color: #2a2a2a !important;
+    color: #aaa !important;
+    height: 36px !important;
+    font-size: 13px !important;
+    border-radius: 8px !important;
+    border: 1px solid #444 !important;
+    width: 100% !important;
+    font-weight: normal !important;
+  }
+  .vote-btn-active > button {
+    background-color: #1a3a1a !important;
+    color: #30D158 !important;
+    height: 36px !important;
+    font-size: 13px !important;
+    border-radius: 8px !important;
+    border: 1px solid #30D158 !important;
+    width: 100% !important;
+    font-weight: normal !important;
+  }
   .panel-card {
     background: #1a1a1a;
     border-radius: 12px; padding: 18px; margin: 16px 0;
@@ -134,6 +156,33 @@ with st.sidebar:
         st.markdown("")
     st.markdown("---")
     st.caption("Turn 1: Musk 선제 비판\nTurn 2: Karpathy 반응\nTurn 3: Urmson 반응\nTurn 4: Musk 재반박\nTurn 5: Karpathy 재반박\nTurn 6: Urmson 마무리\n⚖️ 에이스웍스 최종 판결")
+    st.markdown("---")
+    history_count = 0
+    if os.path.exists(VOTES_FILE):
+        try:
+            with open(VOTES_FILE, encoding="utf-8") as f:
+                history_count = len(json.load(f))
+        except Exception:
+            pass
+    st.caption(f"누적 투표 데이터: {history_count}개\n(판사 가치관 학습 중)")
+
+
+def load_vote_history():
+    if os.path.exists(VOTES_FILE):
+        try:
+            with open(VOTES_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_vote_history(new_votes: list):
+    history = load_vote_history()
+    history.extend(new_votes)
+    history = history[-50:]
+    with open(VOTES_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
 
 def clean_response(text: str) -> str:
@@ -179,6 +228,19 @@ def debate_call(name, conversation_so_far, my_prompt, idea):
     )
 
 
+# ── 세션 상태 초기화 ────────────────────────────────────
+for _key, _default in [
+    ("debate_log", []),
+    ("debate_done", False),
+    ("user_idea", ""),
+    ("votes", []),
+    ("verdict", ""),
+    ("verdict_done", False),
+]:
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
+
+
 # ── 메인 ──────────────────────────────────────────────
 st.markdown("# 🥊 거물 토론")
 st.caption("Musk → Karpathy → Urmson → Musk → Karpathy → Urmson → 에이스웍스 판결")
@@ -192,7 +254,13 @@ with st.form("debate_form", clear_on_submit=True):
     submitted = st.form_submit_button("🥊 토론 시작")
 
 if submitted and user_idea.strip():
-    log = []
+    st.session_state.debate_log = []
+    st.session_state.votes = []
+    st.session_state.verdict = ""
+    st.session_state.verdict_done = False
+    st.session_state.user_idea = user_idea.strip()
+    idea = user_idea.strip()
+    log = st.session_state.debate_log
 
     def get_log_text():
         return "\n\n".join(f"[{n} — {l}]: {c}" for n, l, c in log)
@@ -208,12 +276,11 @@ if submitted and user_idea.strip():
                 "이 아이디어의 핵심 전제 중 가장 잘못된 것 하나를 골라 집중 공격하세요. "
                 "왜 그 전제가 틀렸는지 당신의 직접 경험이나 구체적 숫자를 들어 말하고, "
                 "마지막은 상대가 바로 답하기 어려운 질문으로 끝내세요. 4~5문장.",
-                user_idea,
+                idea,
             )
         except Exception as e:
             t1 = f"오류: {e}"
     log.append(("Elon Musk", "선제 비판", t1))
-    render_card("Elon Musk", "선제 비판", t1)
 
     # Turn 2
     st.markdown("### 🟡 Turn 2")
@@ -226,12 +293,11 @@ if submitted and user_idea.strip():
                 "당신이 동의하는 부분과 동의하지 않는 부분을 명확히 나누어 반응하세요. "
                 "당신의 Tesla AI 경험을 근거로 구체적 반론이나 보완을 더하고, "
                 "마지막은 Musk나 Urmson이 생각해볼 질문으로 끝내세요. 4~5문장.",
-                user_idea,
+                idea,
             )
         except Exception as e:
             t2 = f"오류: {e}"
     log.append(("Andrej Karpathy", "Musk에 반응", t2))
-    render_card("Andrej Karpathy", "Musk에 반응", t2)
 
     # Turn 3
     st.markdown("### 🟡 Turn 3")
@@ -244,12 +310,11 @@ if submitted and user_idea.strip():
                 "Google/Waymo 자율주행 초기 경험을 근거로 들고, "
                 "속도보다 안전·신뢰의 관점에서 두 사람이 놓친 현실적 위험을 지적하세요. "
                 "마지막은 두 사람 모두 쉽게 답 못 할 질문으로 끝내세요. 4~5문장.",
-                user_idea,
+                idea,
             )
         except Exception as e:
             t3 = f"오류: {e}"
     log.append(("Chris Urmson", "Musk·Karpathy에 반응", t3))
-    render_card("Chris Urmson", "Musk·Karpathy에 반응", t3)
 
     # Turn 4
     st.markdown("### 🔴 Turn 4")
@@ -263,12 +328,11 @@ if submitted and user_idea.strip():
                 "양보할 부분은 딱 한 줄로 인정하되, 나머지는 더 공격적으로 밀어붙이세요. "
                 "Tesla나 SpaceX의 실제 사례로 당신 논지를 강화하고, "
                 "마지막은 더 날카로운 질문으로 끝내세요. 4~5문장.",
-                user_idea,
+                idea,
             )
         except Exception as e:
             t4 = f"오류: {e}"
     log.append(("Elon Musk", "재반박", t4))
-    render_card("Elon Musk", "재반박", t4)
 
     # Turn 5
     st.markdown("### 🟡 Turn 5")
@@ -280,12 +344,11 @@ if submitted and user_idea.strip():
                 "Musk의 이번 재반박 중 틀린 부분을 구체적으로 집어서 반박하세요. "
                 "동시에 Urmson의 안전 논점 중 당신이 동의하는 부분을 짧게 언급하며 "
                 "두 사람 사이 어딘가에 있는 당신의 입장을 명확히 정리하세요. 4~5문장.",
-                user_idea,
+                idea,
             )
         except Exception as e:
             t5 = f"오류: {e}"
     log.append(("Andrej Karpathy", "재반박", t5))
-    render_card("Andrej Karpathy", "재반박", t5)
 
     # Turn 6
     st.markdown("### 🟢 Turn 6 — 마무리")
@@ -297,18 +360,73 @@ if submitted and user_idea.strip():
                 "두 사람의 최종 입장을 들은 뒤, 이 토론에서 실제로 해결된 것과 "
                 "여전히 위험하게 열려 있는 문제를 구분해 정리하세요. "
                 "당신의 최종 입장은 흥분 없이 차분하지만, 타협 없이 분명하게 말하세요. 4~5문장.",
-                user_idea,
+                idea,
             )
         except Exception as e:
             t6 = f"오류: {e}"
     log.append(("Chris Urmson", "마무리", t6))
-    render_card("Chris Urmson", "마무리", t6)
 
-    # Judge
+    st.session_state.votes = [False] * len(log)
+    st.session_state.debate_done = True
+    st.rerun()
+
+
+# ── 투표 + 판결 UI ─────────────────────────────────────
+if st.session_state.debate_done and not submitted:
+    log = st.session_state.debate_log
+    idea = st.session_state.user_idea
+
+    def get_log_text():
+        return "\n\n".join(f"[{n} — {l}]: {c}" for n, l, c in log)
+
+    st.markdown("---")
+    st.markdown("### 💬 토론 결과")
+    st.caption("마음에 드는 논점에 👍 투표 → 최종 판결에 반영 + 이후 토론에도 이 가치관이 누적됩니다.")
+
+    TURN_HEADERS = [
+        "### 🔴 Turn 1", "### 🟡 Turn 2", "### 🟡 Turn 3",
+        "### 🔴 Turn 4", "### 🟡 Turn 5", "### 🟢 Turn 6 — 마무리",
+    ]
+
+    for i, (name, label, content) in enumerate(log):
+        st.markdown(TURN_HEADERS[i] if i < len(TURN_HEADERS) else f"### Turn {i + 1}")
+        render_card(name, label, content)
+
+        voted = st.session_state.votes[i] if i < len(st.session_state.votes) else False
+        css_class = "vote-btn-active" if voted else "vote-btn"
+        btn_text = "✅ 선택됨" if voted else "👍 이 논점 선택"
+
+        col, _ = st.columns([3, 7])
+        with col:
+            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+            if st.button(btn_text, key=f"vote_{i}"):
+                st.session_state.votes[i] = not voted
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── 판결 섹션 ────────────────────────────────────
     st.markdown("---")
     st.markdown("### ⚖️ 최종 판결 — 에이스웍스 코리아 대표")
 
-    judge_system = """You must respond ONLY in Korean (한국어). Never use English sentences.
+    if not st.session_state.verdict_done:
+        voted_count = sum(st.session_state.votes)
+        if voted_count == 0:
+            st.caption("투표 없이도 판결 가능 | 논점을 선택하면 판결에 가중 반영됩니다.")
+        else:
+            st.caption(f"선택된 논점 {voted_count}개 — 판결 및 이후 토론에 반영됩니다.")
+
+        if st.button("⚖️ 최종 판결 받기"):
+            voted_args = [
+                f"[{log[i][0]} — {log[i][1]}]: {log[i][2]}"
+                for i, v in enumerate(st.session_state.votes) if v
+            ]
+            history = load_vote_history()
+            historical_args = [
+                f"[{v['speaker']}]: {v['argument'][:200]}"
+                for v in history[-10:]
+            ]
+
+            judge_system = """You must respond ONLY in Korean (한국어). Never use English sentences.
 모든 응답은 반드시 한국어로만 작성하세요.
 
 당신은 에이스웍스 코리아의 대표입니다.
@@ -326,12 +444,26 @@ if submitted and user_idea.strip():
 - 최종 결론은 반드시 "채택 / 수정 후 채택 / 기각" 중 하나로 명확하게 내린다
 - 결론 뒤에 우리 팀에게 한 마디를 덧붙인다"""
 
-    judge_prompt = f"""아이디어: {user_idea}
+            voted_section = ""
+            if voted_args:
+                voted_section += (
+                    "\n\n[이번 토론에서 팀이 중요하다고 선택한 논점 — 판결 시 가중 반영]\n"
+                    + "\n\n".join(voted_args)
+                )
+            if historical_args:
+                voted_section += (
+                    "\n\n[과거 누적 데이터: 이 팀이 반복적으로 중요하게 평가한 논점 유형 — 판사 가치관 참고]\n"
+                    + "\n".join(historical_args)
+                )
+
+            judge_prompt = f"""아이디어: {idea}
 
 전체 토론:
 {get_log_text()}
+{voted_section}
 
 위 토론을 바탕으로 에이스웍스 코리아 대표로서 최종 판결을 내려주세요.
+팀이 선택한 논점이 있다면 그것을 특별히 무겁게 다루고, 과거 가치관 데이터도 판결 기조에 반영하세요.
 
 [판결문 구조]
 ① 토론 핵심 쟁점 요약 (2~3줄)
@@ -340,26 +472,41 @@ if submitted and user_idea.strip():
 ④ 결론: 채택 / 수정 후 채택 / 기각 — 이유 한 문장
 ⑤ 우리 팀에게 한 마디"""
 
-    with st.spinner("⚖️ 최종 판결 작성 중..."):
-        try:
-            verdict = call_groq(
-                [
-                    {"role": "system", "content": judge_system},
-                    {"role": "user", "content": judge_prompt},
-                ],
-                temperature=0.65,
-            )
-        except Exception as e:
-            verdict = f"오류: {e}"
+            with st.spinner("⚖️ 최종 판결 작성 중..."):
+                try:
+                    verdict = call_groq(
+                        [
+                            {"role": "system", "content": judge_system},
+                            {"role": "user", "content": judge_prompt},
+                        ],
+                        temperature=0.65,
+                    )
+                except Exception as e:
+                    verdict = f"오류: {e}"
 
-    st.markdown(
-        f'<div class="panel-card" style="border-left: 4px solid #FFD60A; background: #1e1a00;">'
-        f'<div class="panel-name">⚖️ 에이스웍스 코리아 대표</div>'
-        f'<div class="panel-title">최종 판결</div>'
-        f'{verdict}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+            st.session_state.verdict = verdict
+            st.session_state.verdict_done = True
 
-    st.markdown("---")
-    st.success("✅ 토론 완료")
+            new_votes = [
+                {"speaker": log[i][0], "label": log[i][1], "argument": log[i][2]}
+                for i, v in enumerate(st.session_state.votes) if v
+            ]
+            if new_votes:
+                save_vote_history(new_votes)
+
+            st.rerun()
+
+    if st.session_state.verdict_done:
+        if sum(st.session_state.votes) > 0:
+            st.info(f"선택된 논점 {sum(st.session_state.votes)}개가 이번 판결 및 향후 토론에 반영되었습니다.")
+
+        st.markdown(
+            f'<div class="panel-card" style="border-left: 4px solid #FFD60A; background: #1e1a00;">'
+            f'<div class="panel-name">⚖️ 에이스웍스 코리아 대표</div>'
+            f'<div class="panel-title">최종 판결</div>'
+            f'{st.session_state.verdict}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("---")
+        st.success("✅ 토론 완료")
