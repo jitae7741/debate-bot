@@ -3,10 +3,12 @@
 import os
 import re
 import json
+import requests
 import streamlit as st
 from groq import Groq
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "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")
 VOTES_FILE = "votes_history.json"
 
 PERSONAS = {
@@ -28,6 +30,7 @@ PERSONAS = {
 - Tesla FSD, Autopilot, SpaceX Falcon 9 재사용, xAI Grok — 직접 만든 것들로 논거를 댄다
 - 추상적 논의를 경멸한다. "그래서 숫자가 뭔데?" "실제로 만들어본 적 있어?"로 끊는다
 - 상대방 발언에서 가장 취약한 가정 하나를 골라 집중 공격한다
+- [실시간 검색 데이터]가 제공된 경우, 그 내용을 당신의 논리에 자연스럽게 녹여서 활용하세요
 
 말투:
 - 짧고 강하게. 수식어 없이 핵심만. 한 문장이 두 줄을 넘지 않는다
@@ -52,6 +55,7 @@ PERSONAS = {
 - 화려한 아이디어보다 "실제로 작동하는가"를 더 중요하게 본다
 - 강의하듯 설명하는 걸 좋아하지만, 거만하지 않다. 오히려 겸손하게 "제 생각엔..."으로 시작한다
 - 논문과 현실의 갭을 누구보다 잘 안다. Tesla에서 직접 부딪혀봤기 때문에.
+- [실시간 검색 데이터]가 제공된 경우, 그 내용을 분석적으로 해석해 논점에 반영하세요
 
 말투:
 - 사려 깊고 분석적. 하지만 딱딱하지 않다
@@ -76,6 +80,7 @@ PERSONAS = {
 - "이건 될 거야"라는 말을 들으면 본능적으로 "뭐가 잘못될 수 있지?"를 떠올린다
 - 기술 자체보다 그 기술이 사회와 만나는 지점 — 신뢰, 규제, 사고 책임 — 을 더 걱정한다
 - 틀린 걸 알면서도 빠르게 가는 것보다, 느리더라도 제대로 가는 쪽을 선택한다
+- [실시간 검색 데이터]가 제공된 경우, 규제·안전·신뢰 관점에서 해석해 논점에 반영하세요
 
 말투:
 - 차분하고 무게감 있다. 감정적으로 반응하지 않는다
@@ -140,6 +145,11 @@ st.markdown("""
   }
   .panel-title {
     font-size: 13px; color: #888; margin-bottom: 14px;
+  }
+  .search-tag {
+    display: inline-block; background: #1a2a1a; color: #30D158;
+    border: 1px solid #2a4a2a; border-radius: 6px;
+    padding: 2px 8px; font-size: 12px; margin-bottom: 8px;
   }
   h1 { color: #FF3B30 !important; font-size: 26px !important; }
   h3 { color: #f0f0f0 !important; }
@@ -209,23 +219,100 @@ def call_groq(messages: list, temperature: float = 0.8) -> str:
     raise RuntimeError("모든 모델 한도 초과. 내일 다시 시도하거나 Groq Dev 티어로 업그레이드하세요.")
 
 
-def render_card(name, label, content):
+# ── Tavily 검색 파이프라인 ──────────────────────────────
+
+def generate_search_queries(idea: str) -> dict:
+    """LLM으로 페르소나별 최적화 검색어 생성, 실패 시 템플릿 fallback"""
+    try:
+        prompt = (
+            f"Generate optimized English web search queries for this topic: '{idea[:300]}'\n\n"
+            "Each query should reflect that person's perspective and expertise. "
+            "Respond ONLY with valid JSON, no other text:\n"
+            '{"Elon Musk": "...", "Andrej Karpathy": "...", "Chris Urmson": "..."}'
+        )
+        resp = call_groq([{"role": "user", "content": prompt}], temperature=0.2)
+        match = re.search(r'\{[^{}]+\}', resp, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            if all(k in data for k in PERSONAS):
+                return data
+    except Exception:
+        pass
+    # Fallback: 템플릿 기반 쿼리
+    keywords = re.sub(r'[^\w\s]', ' ', idea)[:80].strip()
+    return {
+        "Elon Musk": f"Elon Musk opinion {keywords} 2024 2025",
+        "Andrej Karpathy": f"Andrej Karpathy {keywords} AI deep learning",
+        "Chris Urmson": f"Chris Urmson Aurora {keywords} autonomous safety",
+    }
+
+
+def search_tavily(query: str) -> str:
+    """Tavily API로 검색, 핵심 스니펫 반환"""
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": 3,
+                "include_answer": True,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        lines = []
+        if data.get("answer"):
+            lines.append(f"핵심 요약: {data['answer'][:400]}")
+        for r in data.get("results", [])[:3]:
+            title = r.get("title", "").strip()
+            content = r.get("content", "").strip()[:280]
+            if title or content:
+                lines.append(f"• {title}: {content}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def build_search_contexts(idea: str) -> tuple:
+    """각 페르소나별 검색어 생성 → Tavily 검색 → 컨텍스트 딕셔너리 반환"""
+    queries = generate_search_queries(idea)
+    contexts = {}
+    for name, query in queries.items():
+        contexts[name] = search_tavily(query)
+    return queries, contexts
+
+
+# ── 렌더링 헬퍼 ────────────────────────────────────────
+
+def render_card(name, label, content, has_search=False):
     info = PERSONAS[name]
+    search_badge = '<span class="search-tag">🌐 실시간 검색 반영</span><br>' if has_search else ''
     st.markdown(
         f'<div class="panel-card" style="border-left: 4px solid {info["color"]};">'
         f'<div class="panel-name">{info["icon"]} {name} <span style="color:#888;font-size:13px;font-weight:normal;">— {label}</span></div>'
         f'<div class="panel-title">{info["title"]}</div>'
+        f'{search_badge}'
         f'{content}'
         f'</div>',
         unsafe_allow_html=True,
     )
 
 
-def debate_call(name, conversation_so_far, my_prompt, idea):
+def debate_call(name, conversation_so_far, my_prompt, idea, context=""):
+    ctx_section = (
+        f"\n\n[실시간 검색 데이터 — {name}의 관점에서 수집된 최신 정보. "
+        f"이 내용을 당신의 논리에 자연스럽게 녹여 활용하세요. "
+        f"검색 결과가 당신의 가치관과 맞지 않으면 반박 근거로도 쓸 수 있습니다.]\n{context}"
+        if context else ""
+    )
+    base = f"아이디어: {idea}{ctx_section}"
     content = (
-        f"아이디어: {idea}\n\n{conversation_so_far}\n\n{my_prompt}"
+        f"{base}\n\n{conversation_so_far}\n\n{my_prompt}"
         if conversation_so_far
-        else f"아이디어: {idea}\n\n{my_prompt}"
+        else f"{base}\n\n{my_prompt}"
     )
     return call_groq(
         [
@@ -244,6 +331,8 @@ for _key, _default in [
     ("votes", []),
     ("verdict", ""),
     ("verdict_done", False),
+    ("search_queries", {}),
+    ("search_contexts", {}),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
@@ -266,6 +355,8 @@ if submitted and user_idea.strip():
     st.session_state.votes = []
     st.session_state.verdict = ""
     st.session_state.verdict_done = False
+    st.session_state.search_queries = {}
+    st.session_state.search_contexts = {}
     st.session_state.user_idea = user_idea.strip()
     idea = user_idea.strip()
     log = st.session_state.debate_log
@@ -274,6 +365,15 @@ if submitted and user_idea.strip():
         return "\n\n".join(f"[{n} — {l}]: {c}" for n, l, c in log)
 
     st.markdown("---")
+
+    # ── 검색 단계 ──────────────────────────────────────
+    with st.spinner("🌐 각 전문가 관점으로 실시간 검색 중..."):
+        try:
+            queries, contexts = build_search_contexts(idea)
+            st.session_state.search_queries = queries
+            st.session_state.search_contexts = contexts
+        except Exception:
+            queries, contexts = {}, {}
 
     # Turn 1
     st.markdown("### 🔴 Turn 1")
@@ -285,6 +385,7 @@ if submitted and user_idea.strip():
                 "왜 그 전제가 틀렸는지 당신의 직접 경험이나 구체적 숫자를 들어 말하고, "
                 "마지막은 상대가 바로 답하기 어려운 질문으로 끝내세요. 4~5문장.",
                 idea,
+                context=contexts.get("Elon Musk", ""),
             )
         except Exception as e:
             t1 = f"오류: {e}"
@@ -302,6 +403,7 @@ if submitted and user_idea.strip():
                 "당신의 Tesla AI 경험을 근거로 구체적 반론이나 보완을 더하고, "
                 "마지막은 Musk나 Urmson이 생각해볼 질문으로 끝내세요. 4~5문장.",
                 idea,
+                context=contexts.get("Andrej Karpathy", ""),
             )
         except Exception as e:
             t2 = f"오류: {e}"
@@ -319,6 +421,7 @@ if submitted and user_idea.strip():
                 "속도보다 안전·신뢰의 관점에서 두 사람이 놓친 현실적 위험을 지적하세요. "
                 "마지막은 두 사람 모두 쉽게 답 못 할 질문으로 끝내세요. 4~5문장.",
                 idea,
+                context=contexts.get("Chris Urmson", ""),
             )
         except Exception as e:
             t3 = f"오류: {e}"
@@ -337,6 +440,7 @@ if submitted and user_idea.strip():
                 "Tesla나 SpaceX의 실제 사례로 당신 논지를 강화하고, "
                 "마지막은 더 날카로운 질문으로 끝내세요. 4~5문장.",
                 idea,
+                context=contexts.get("Elon Musk", ""),
             )
         except Exception as e:
             t4 = f"오류: {e}"
@@ -353,6 +457,7 @@ if submitted and user_idea.strip():
                 "동시에 Urmson의 안전 논점 중 당신이 동의하는 부분을 짧게 언급하며 "
                 "두 사람 사이 어딘가에 있는 당신의 입장을 명확히 정리하세요. 4~5문장.",
                 idea,
+                context=contexts.get("Andrej Karpathy", ""),
             )
         except Exception as e:
             t5 = f"오류: {e}"
@@ -369,6 +474,7 @@ if submitted and user_idea.strip():
                 "여전히 위험하게 열려 있는 문제를 구분해 정리하세요. "
                 "당신의 최종 입장은 흥분 없이 차분하지만, 타협 없이 분명하게 말하세요. 4~5문장.",
                 idea,
+                context=contexts.get("Chris Urmson", ""),
             )
         except Exception as e:
             t6 = f"오류: {e}"
@@ -383,11 +489,32 @@ if submitted and user_idea.strip():
 if st.session_state.debate_done and not submitted:
     log = st.session_state.debate_log
     idea = st.session_state.user_idea
+    queries = st.session_state.get("search_queries", {})
+    contexts = st.session_state.get("search_contexts", {})
 
     def get_log_text():
         return "\n\n".join(f"[{n} — {l}]: {c}" for n, l, c in log)
 
     st.markdown("---")
+
+    # 검색 컨텍스트 표시
+    if queries:
+        with st.expander("🌐 실시간 검색 데이터 — 토론 근거로 사용됨"):
+            for name, query in queries.items():
+                info = PERSONAS[name]
+                st.markdown(f"**{info['icon']} {name}**")
+                st.code(query, language=None)
+                ctx = contexts.get(name, "")
+                if ctx:
+                    st.markdown(
+                        f'<div style="background:#111;border-radius:8px;padding:12px;'
+                        f'font-size:13px;color:#aaa;line-height:1.6;">{ctx}</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption("검색 결과 없음 — 페르소나 기본 가치관으로 추론")
+                st.markdown("")
+
     st.markdown("### 💬 토론 결과")
     st.caption("마음에 드는 논점에 👍 투표 → 최종 판결에 반영 + 이후 토론에도 이 가치관이 누적됩니다.")
 
@@ -398,7 +525,8 @@ if st.session_state.debate_done and not submitted:
 
     for i, (name, label, content) in enumerate(log):
         st.markdown(TURN_HEADERS[i] if i < len(TURN_HEADERS) else f"### Turn {i + 1}")
-        render_card(name, label, content)
+        has_search = bool(contexts.get(name, ""))
+        render_card(name, label, content, has_search=has_search)
 
         voted = st.session_state.votes[i] if i < len(st.session_state.votes) else False
         css_class = "vote-btn-active" if voted else "vote-btn"
