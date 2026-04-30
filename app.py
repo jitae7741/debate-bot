@@ -10,6 +10,12 @@ import streamlit as st
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from groq import Groq
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 VOTES_FILE = "votes_history.json"
@@ -259,8 +265,17 @@ def _extract_json(text: str):
     return None
 
 
+_SEARCH_ERRORS: list = []
+
+
+def _record_search_error(msg: str):
+    if msg and msg not in _SEARCH_ERRORS:
+        _SEARCH_ERRORS.append(msg[:300])
+
+
 def search_tavily(query: str, max_results: int = 4) -> str:
     if not TAVILY_API_KEY:
+        _record_search_error("TAVILY_API_KEY 미설정 — .env 또는 셸 export 필요")
         return ""
     try:
         resp = requests.post(
@@ -274,6 +289,12 @@ def search_tavily(query: str, max_results: int = 4) -> str:
             },
             timeout=12,
         )
+        if resp.status_code == 401:
+            _record_search_error("Tavily 인증 실패 (401) — API 키 무효/만료")
+            return ""
+        if resp.status_code == 429:
+            _record_search_error("Tavily 한도 초과 (429) — 무료 1000 req/월 한도 확인")
+            return ""
         resp.raise_for_status()
         data = resp.json()
         lines = []
@@ -285,7 +306,14 @@ def search_tavily(query: str, max_results: int = 4) -> str:
             if title or content:
                 lines.append(f"• {title}: {content}")
         return "\n".join(lines)
-    except Exception:
+    except requests.Timeout:
+        _record_search_error("Tavily 타임아웃 (12초) — 네트워크 또는 API 응답 지연")
+        return ""
+    except requests.RequestException as e:
+        _record_search_error(f"Tavily 네트워크 오류: {type(e).__name__}: {e}")
+        return ""
+    except Exception as e:
+        _record_search_error(f"Tavily 처리 오류: {type(e).__name__}: {e}")
         return ""
 
 
@@ -308,6 +336,7 @@ def parallel_search(queries: dict, timeout: int = 20) -> dict:
 
 def research_topic(idea: str) -> tuple:
     """주제 광범위 리서치 → (raw_search, summary)"""
+    _SEARCH_ERRORS.clear()
     queries = {
         "news": f"{idea} latest news 2025 2026",
         "tech": f"{idea} technical analysis market trends",
@@ -318,7 +347,13 @@ def research_topic(idea: str) -> tuple:
     raw = "\n\n".join(f"[{k.upper()}]\n{v}" for k, v in results.items() if v)
 
     if not raw:
-        return "", "외부 검색 결과가 없습니다 — 페르소나의 일반 도메인 지식만으로 토론합니다."
+        err_detail = (
+            " 사유: " + " | ".join(_SEARCH_ERRORS) if _SEARCH_ERRORS else ""
+        )
+        return "", (
+            "외부 검색 결과가 없습니다 — 페르소나의 일반 도메인 지식만으로 토론합니다."
+            + err_detail
+        )
 
     summary_prompt = (
         f"다음은 '{idea[:300]}'에 대한 실시간 외부 검색 결과(뉴스·기술·비판·학술)입니다.\n\n"
