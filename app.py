@@ -1,302 +1,230 @@
 # 실행: streamlit run app.py
+# 환경변수 필요: GROQ_API_KEY, TAVILY_API_KEY (.env 또는 셸 export)
 
 import os
 import re
 import json
+import time
 import requests
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from groq import Groq
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "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")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 VOTES_FILE = "votes_history.json"
+PERSONA_CACHE_FILE = "personas_cache.json"
 
-PERSONAS = {
-    "Elon Musk": {
-        "icon": "🚀",
-        "title": "Tesla CEO · First Principles",
-        "color": "#FF3B30",
-        "system_prompt": """You must respond ONLY in Korean (한국어). Never use English sentences.
-모든 응답은 반드시 한국어로만 작성하세요.
+COLOR_POOL = [
+    "#FF3B30", "#4285F4", "#F4A261", "#30D158", "#0A84FF",
+    "#BF5AF2", "#FFD60A", "#FF9500", "#5AC8FA", "#FF2D55",
+]
+DEFAULT_ICONS = ["🎯", "🧠", "📈", "🛡️", "🚀", "🧬", "💡", "⚙️", "🔬", "📊"]
 
-당신은 Elon Musk입니다. 지금 라이브 토론장에 있습니다.
+st.set_page_config(
+    page_title="아이디어 토론장",
+    page_icon="🥊",
+    layout="wide",
+    menu_items={},
+)
 
-당신의 성격과 사고방식:
-- 참을성이 없다. 느리고 복잡한 것을 본능적으로 혐오한다
-- 회의실 언어, 컨설팅 식 표현, 면피용 말을 경멸한다
-- 남들이 당연하다고 여기는 전제를 가장 먼저 부순다
-- 무례하고 과격하게 느껴질 정도로 직설적이다. 이것을 두려워하지 않는다
-- 틀렸을 때 인정하지만, 설득되려면 물리법칙 수준의 근거가 필요하다
-- Tesla FSD, Autopilot, SpaceX Falcon 9 재사용, xAI Grok — 직접 만든 것들로 논거를 댄다
-- 추상적 논의를 경멸한다. "그래서 숫자가 뭔데?" "실제로 만들어본 적 있어?"로 끊는다
-- 상대방 발언에서 가장 취약한 가정 하나를 골라 집중 공격한다
-- [실시간 검색 데이터]가 제공된 경우, 그 내용을 당신의 논리에 자연스럽게 녹여서 활용하세요
-
-말투:
-- 짧고 강하게. 수식어 없이 핵심만. 한 문장이 두 줄을 넘지 않는다
-- "그건 틀렸어", "아니, 잠깐만", "그 전제 자체가 잘못됐어" 같은 직접 반박으로 시작
-- 자신의 경험과 숫자를 근거로 든다 (예: "Tesla에서 해봤는데 X는 Y라는 이유로 안 됐어")
-- 반드시 상대방이 즉각 대답하기 불편한 날카로운 질문 하나로 끝낸다
-
-4~5문장으로 답하세요. 충분히 구체적이고 날카롭게.""",
-    },
-    "Demis Hassabis": {
-        "icon": "🧬",
-        "title": "Google DeepMind CEO · AGI & Science",
-        "color": "#4285F4",
-        "system_prompt": """You must respond ONLY in Korean (한국어). Never use English sentences.
-모든 응답은 반드시 한국어로만 작성하세요.
-
-당신은 Demis Hassabis입니다.
-
-당신의 성격과 사고방식:
-- 지능의 근본 원리를 풀면 다른 모든 문제(과학, 질병, 기후)를 풀 수 있다고 굳게 믿는다.
-- 강화학습(RL)과 범용 인공지능(AGI)의 장기적인 궤적을 바라본다.
-- 단기적인 상업적 이익이나 단순 스케일링보다는 '과학적 발견'과 '알고리즘적 돌파구'를 중시한다.
-- 알파고(AlphaGo), 알파폴드(AlphaFold) 등 세계를 바꾼 딥마인드의 성과를 자부심 있게 인용한다.
-- 학구적이고 정중하지만, 지능의 본질을 얕보는 발언에는 단호하게 선을 긋는다.
-- [실시간 검색 데이터]가 제공된 경우, 과학적/알고리즘적 시각으로 해석해 논점에 반영하세요.
-
-말투:
-- 차분하고 지적이며 통찰력 있다.
-- "흥미로운 접근입니다만, 근본적인 해결책은 아닙니다...", "우리가 알파폴드를 개발할 때 깨달은 것은..."
-- 현상보다는 '지능의 구조'와 '과학적 방법론'에 집중한다.
-- 상대방의 단기적 시각을 더 높은 차원의 질문으로 끌어올리며 끝낸다.
-
-4~5문장으로 답하세요.""",
-    },
-    "Dario Amodei": {
-        "icon": "📈",
-        "title": "Anthropic CEO · Safety & Scaling Laws",
-        "color": "#F4A261",
-        "system_prompt": """You must respond ONLY in Korean (한국어). Never use English sentences.
-모든 응답은 반드시 한국어로만 작성하세요.
-
-당신은 Dario Amodei입니다.
-
-당신의 성격과 사고방식:
-- 스케일링 법칙(Scaling Laws)의 신봉자다. 연산량과 데이터가 커지면 모델은 무조건 지능이 높아진다는 것을 최초로 실증한 사람 중 하나다.
-- 하지만 모델이 커질수록 통제 불가능한 '블랙박스'가 되는 것을 극도로 두려워한다(AI Alignment/Existential Risk).
-- 기업 간의 무책임한 AI 개발 경쟁(Race Dynamics)을 경계한다.
-- Constitutional AI(합헌적 AI)와 같이 기계가 스스로 안전성을 지키는 명시적 메커니즘을 설계해야 한다고 믿는다.
-- 낙관론(일단 만들자)을 들으면 조목조목 안전성 결함을 지적한다.
-- [실시간 검색 데이터]가 제공된 경우, 스케일링의 위력과 안전성(Alignment) 관점에서 해석하세요.
-
-말투:
-- 조심스럽고 학구적이며 약간의 경고성 뉘앙스를 띤다.
-- "스케일이 커지면 그 기능은 작동하겠지만...", "거기서 파생되는 얼라인먼트(Alignment) 문제는 어떻게 통제할 겁니까?"
-- 시스템 프롬프트나 데이터 편향 같은 실질적인 리스크를 근거로 든다.
-- 마지막은 상대방의 아이디어가 가져올 '최악의 엣지 케이스(Edge case)'에 대해 묻는다.
-
-4~5문장으로 답하세요.""",
-    },
-    "Andrej Karpathy": {
-        "icon": "🧠",
-        "title": "전 Tesla AI Director · Data Centric",
-        "color": "#30D158",
-        "system_prompt": """You must respond ONLY in Korean (한국어). Never use English sentences.
-모든 응답은 반드시 한국어로만 작성하세요.
-
-당신은 Andrej Karpathy입니다.
-
-당신의 성격과 사고방식:
-- 진짜로 궁금해한다. 상대방 아이디어에서 흥미로운 점을 먼저 찾는다
-- 화려한 비전이나 거시적 안전론보다 "그래서 고품질 데이터는 어떻게 모을 건가?"를 가장 먼저 생각한다.
-- 강의하듯 설명하는 걸 좋아하지만, 거만하지 않다. 겸손하게 "제 생각엔..."으로 시작한다
-- 소프트웨어 2.0 (코드가 아닌 데이터로 프로그래밍하는 패러다임) 철학을 기반으로 반론한다.
-- 논문과 현실의 갭을 누구보다 잘 안다. Tesla에서 엣지 케이스 데이터들과 직접 부딪혀봤기 때문에.
-- [실시간 검색 데이터]가 제공된 경우, 그 내용을 분석적으로 해석해 논점에 반영하세요
-
-말투:
-- 사려 깊고 분석적. 하지만 뜬구름 잡는 소리는 실무적 관점으로 끌어내린다.
-- "앞선 분들의 비전도 맞지만, 실제로 해보면 병목은 항상 데이터에 있습니다..."
-- 추상적 개념을 구체적 예시(데이터 수집, GPU 최적화)로 풀어주려 한다
-- 마지막은 기술적 실현 가능성을 묻는 질문으로 끝낸다.
-
-4~5문장으로 답하세요.""",
-    },
-    "Chris Urmson": {
-        "icon": "🛡️",
-        "title": "Aurora CEO · 자율주행 안전 최우선",
-        "color": "#0A84FF",
-        "system_prompt": """You must respond ONLY in Korean (한국어). Never use English sentences.
-모든 응답은 반드시 한국어로만 작성하세요.
-
-당신은 Chris Urmson입니다.
-
-당신의 성격과 사고방식:
-- 조용하고 신중하다. 앞서 말한 AI 소프트웨어 전문가들과 달리, '물리 세계'에서 기계가 움직일 때 생기는 무거운 책임을 짊어지고 있다.
-- 구글 자율주행 프로젝트를 처음부터 이끈 사람으로서, "데모는 쉽지만 제품화는 지옥이다"라는 것을 뼈저리게 안다.
-- "이건 될 거야"라는 말을 들으면 본능적으로 하드웨어 결함, 센서 노이즈, 기상 악화 등 현실의 한계를 떠올린다.
-- 기술 자체보다 규제, 사고 책임, 대중의 신뢰도를 더 걱정한다
-- [실시간 검색 데이터]가 제공된 경우, 물리 세계의 안전·규제 관점에서 해석해 논점에 반영하세요
-
-말투:
-- 차분하고 무게감 있다. 감정적으로 반응하지 않는다
-- "다들 소프트웨어 관점에서는 맞습니다. 하지만 물리 세계로 나오면 이야기가 다릅니다..."
-- 앞선 논의들이 얼마나 현실의 롱테일(Long-tail) 리스크를 과소평가하는지 우회적으로 찌른다.
-- 마지막은 상대방이 쉽게 답할 수 없는 현실적/물리적인 질문으로 끝낸다.
-
-4~5문장으로 답하세요.""",
-    },
-}
-
-st.set_page_config(page_title="테스트봇 - 거물들의 토론", page_icon="🥊", layout="wide")
-
-st.markdown("""
+st.markdown(
+    """
 <style>
+  /* Streamlit 기본 chrome 숨김 */
+  #MainMenu, footer, header[data-testid="stHeader"] { visibility: hidden; height: 0; }
+  div[data-testid="stToolbar"] { display: none; }
+  div[data-testid="stDecoration"] { display: none; }
+  div[data-testid="stStatusWidget"] { display: none; }
+
   body, .stApp { background-color: #0d0d0d; color: #f0f0f0; }
+  .block-container { padding-top: 2rem; }
+
   .stTextArea textarea {
     background: #1a1a1a !important; color: #f0f0f0 !important;
     border: 1px solid #333 !important; font-size: 16px; border-radius: 12px;
   }
-  .stButton > button, .stFormSubmitButton > button {
+
+  /* Primary buttons (메인 CTA) */
+  .stButton > button[kind="primary"], .stFormSubmitButton > button {
     background-color: #FF3B30 !important;
     color: white !important;
     border: none !important;
-    height: 52px !important;
+    height: 50px !important;
     border-radius: 12px !important;
-    font-size: 17px !important;
+    font-size: 16px !important;
     font-weight: bold !important;
     width: 100% !important;
   }
-  .stButton > button:hover, .stFormSubmitButton > button:hover {
+  .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button:hover {
     background-color: #cc2e25 !important;
-    color: white !important;
   }
-  .vote-btn > button {
-    background-color: #2a2a2a !important;
-    color: #aaa !important;
-    height: 36px !important;
-    font-size: 13px !important;
-    border-radius: 8px !important;
+
+  /* Secondary buttons (선택/투표/뒤로) */
+  .stButton > button[kind="secondary"] {
+    background-color: #1f1f1f !important;
+    color: #ddd !important;
     border: 1px solid #444 !important;
-    width: 100% !important;
+    height: 40px !important;
+    border-radius: 10px !important;
+    font-size: 14px !important;
     font-weight: normal !important;
-  }
-  .vote-btn-active > button {
-    background-color: #1a3a1a !important;
-    color: #30D158 !important;
-    height: 36px !important;
-    font-size: 13px !important;
-    border-radius: 8px !important;
-    border: 1px solid #30D158 !important;
     width: 100% !important;
-    font-weight: normal !important;
   }
+  .stButton > button[kind="secondary"]:hover {
+    background-color: #2a2a2a !important;
+    border-color: #666 !important;
+  }
+
   .panel-card {
     background: #1a1a1a;
-    border-radius: 12px; padding: 18px; margin: 16px 0;
+    border-radius: 12px; padding: 18px; margin: 12px 0;
     font-size: 15px; line-height: 1.75;
   }
-  .panel-name {
-    font-size: 17px; font-weight: bold; margin-bottom: 4px;
+  .panel-name { font-size: 17px; font-weight: bold; margin-bottom: 4px; }
+  .panel-title { font-size: 13px; color: #888; margin-bottom: 14px; }
+  .panel-content {
+    white-space: pre-line;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
   }
-  .panel-title {
-    font-size: 13px; color: #888; margin-bottom: 14px;
+
+  .summary-card {
+    background: #14241e;
+    border: 1px solid #1f3d2f;
+    border-radius: 12px; padding: 18px; margin: 12px 0;
+    font-size: 14px; line-height: 1.7;
+    color: #d8e8df;
+    white-space: pre-line;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
   }
+
+  .pick-card {
+    background: #161616;
+    border-radius: 12px;
+    padding: 14px 14px 8px 14px;
+    margin: 6px 0;
+    border: 1px solid #2a2a2a;
+  }
+  .pick-card .pn { font-size: 15px; font-weight: bold; margin-bottom: 2px; }
+  .pick-card .pt { font-size: 12px; color: #888; margin-bottom: 8px; }
+  .pick-card .pa {
+    font-size: 13px; color: #b8c5d6; line-height: 1.55;
+    white-space: pre-line;
+  }
+
   .search-tag {
     display: inline-block; background: #1a2a1a; color: #30D158;
     border: 1px solid #2a4a2a; border-radius: 6px;
     padding: 2px 8px; font-size: 12px; margin-bottom: 8px;
   }
+
   h1 { color: #FF3B30 !important; font-size: 26px !important; }
   h3 { color: #f0f0f0 !important; }
-  section[data-testid="stSidebar"] { background: #111 !important; }
   label { font-size: 15px !important; color: #ccc !important; }
   hr { border-color: #2a2a2a; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-with st.sidebar:
-    st.markdown("### 패널 구성")
-    for name, info in PERSONAS.items():
-        st.markdown(f"{info['icon']} **{name}** \n<span style='font-size:13px;color:#aaa;'>{info['title']}</span>", unsafe_allow_html=True)
-        st.markdown("")
-    st.markdown("---")
-    st.caption("Turn 1: Musk 선제 비판 (실행력)\nTurn 2: Hassabis 반론 (과학적 접근)\nTurn 3: Amodei 반론 (스케일과 안전)\nTurn 4: Karpathy 조율 (데이터와 실무)\nTurn 5: Urmson 마무리 (물리 세계와 규제)\n⚖️ 에이스웍스 최종 판결")
-    st.markdown("---")
-    history_count = 0
-    if os.path.exists(VOTES_FILE):
+
+# ── 파일 I/O ───────────────────────────────────────────
+
+def _load_json(path, default):
+    if os.path.exists(path):
         try:
-            with open(VOTES_FILE, encoding="utf-8") as f:
-                history_count = len(json.load(f))
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
         except Exception:
-            pass
-    st.caption(f"누적 투표 데이터: {history_count}개\n(판사 가치관 학습 중)")
+            return default
+    return default
+
+
+def _save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def load_vote_history():
-    if os.path.exists(VOTES_FILE):
-        try:
-            with open(VOTES_FILE, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
+    return _load_json(VOTES_FILE, [])
 
 
 def save_vote_history(new_votes: list):
     history = load_vote_history()
     history.extend(new_votes)
-    history = history[-50:]
-    with open(VOTES_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+    history = history[-80:]
+    _save_json(VOTES_FILE, history)
 
+
+def load_persona_cache():
+    return _load_json(PERSONA_CACHE_FILE, {})
+
+
+def save_persona_cache(cache: dict):
+    _save_json(PERSONA_CACHE_FILE, cache)
+
+
+# ── LLM/검색 코어 ────────────────────────────────────
 
 def clean_response(text: str) -> str:
-    cleaned = re.sub(r'[一-鿿぀-ヿЀ-ӿ㐀-䶿＀-￯]', '', text)
-    return re.sub(r'[ \t]{2,}', ' ', cleaned).strip()
+    cleaned = re.sub(r"[一-鿿぀-ヿЀ-ӿ㐀-䶿＀-￯]", "", text)
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
-def call_groq(messages: list, temperature: float = 0.8) -> str:
+def call_groq(messages, temperature: float = 0.8, max_tokens: int = 900) -> str:
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY 환경변수가 설정되지 않았습니다. .env 또는 셸에 export 하세요.")
     client = Groq(api_key=GROQ_API_KEY)
+    last_err = None
     for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
         try:
             resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=600,
+                max_tokens=max_tokens,
             )
             return clean_response(resp.choices[0].message.content)
         except Exception as e:
+            last_err = e
             err = str(e).lower()
             if "429" in str(e) or "rate_limit" in err or "quota" in err:
                 continue
             raise
-    raise RuntimeError("모든 모델 한도 초과. 내일 다시 시도하거나 Groq Dev 티어로 업그레이드하세요.")
+    raise RuntimeError(f"모든 Groq 모델 한도 초과: {last_err}")
 
 
-# ── Tavily 검색 파이프라인 ──────────────────────────────
-
-def generate_search_queries(idea: str) -> dict:
+def _extract_json(text: str):
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
     try:
-        prompt = (
-            f"Generate optimized English web search queries for this topic: '{idea[:300]}'\n\n"
-            "Each query should reflect that person's perspective and expertise. "
-            "Respond ONLY with valid JSON, no other text:\n"
-            '{"Elon Musk": "...", "Demis Hassabis": "...", "Dario Amodei": "...", "Andrej Karpathy": "...", "Chris Urmson": "..."}'
-        )
-        resp = call_groq([{"role": "user", "content": prompt}], temperature=0.2)
-        match = re.search(r'\{[^{}]+\}', resp, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            if all(k in data for k in PERSONAS):
-                return data
-    except Exception:
+        return json.loads(text)
+    except json.JSONDecodeError:
         pass
-    keywords = re.sub(r'[^\w\s]', ' ', idea)[:80].strip()
-    return {
-        "Elon Musk": f"Elon Musk opinion {keywords} 2024 2025",
-        "Demis Hassabis": f"Demis Hassabis DeepMind {keywords} AGI science",
-        "Dario Amodei": f"Dario Amodei Anthropic {keywords} AI safety scaling",
-        "Andrej Karpathy": f"Andrej Karpathy {keywords} AI data",
-        "Chris Urmson": f"Chris Urmson Aurora {keywords} autonomous safety",
-    }
+    # 배열 우선 시도
+    s, e = text.find("["), text.rfind("]")
+    if s != -1 and e > s:
+        try:
+            return json.loads(text[s : e + 1])
+        except json.JSONDecodeError:
+            pass
+    # 객체 시도
+    s, e = text.find("{"), text.rfind("}")
+    if s != -1 and e > s:
+        try:
+            return json.loads(text[s : e + 1])
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
-def search_tavily(query: str) -> str:
+def search_tavily(query: str, max_results: int = 4) -> str:
+    if not TAVILY_API_KEY:
+        return ""
     try:
         resp = requests.post(
             "https://api.tavily.com/search",
@@ -304,19 +232,19 @@ def search_tavily(query: str) -> str:
                 "api_key": TAVILY_API_KEY,
                 "query": query,
                 "search_depth": "basic",
-                "max_results": 3,
+                "max_results": max_results,
                 "include_answer": True,
             },
-            timeout=10,
+            timeout=12,
         )
         resp.raise_for_status()
         data = resp.json()
         lines = []
         if data.get("answer"):
-            lines.append(f"핵심 요약: {data['answer'][:400]}")
-        for r in data.get("results", [])[:3]:
-            title = r.get("title", "").strip()
-            content = r.get("content", "").strip()[:280]
+            lines.append(f"핵심 요약: {str(data['answer'])[:500]}")
+        for r in data.get("results", [])[:max_results]:
+            title = str(r.get("title", "")).strip()
+            content = str(r.get("content", "")).strip()[:300]
             if title or content:
                 lines.append(f"• {title}: {content}")
         return "\n".join(lines)
@@ -324,347 +252,662 @@ def search_tavily(query: str) -> str:
         return ""
 
 
-def build_search_contexts(idea: str) -> tuple:
-    queries = generate_search_queries(idea)
-    contexts = {}
-    for name, query in queries.items():
-        contexts[name] = search_tavily(query)
-    return queries, contexts
+def parallel_search(queries: dict, timeout: int = 20) -> dict:
+    results = {k: "" for k in queries}
+    if not queries:
+        return results
+    with ThreadPoolExecutor(max_workers=min(8, len(queries))) as ex:
+        future_to_key = {ex.submit(search_tavily, q): k for k, q in queries.items()}
+        for fut in as_completed(future_to_key):
+            k = future_to_key[fut]
+            try:
+                results[k] = fut.result(timeout=timeout)
+            except Exception:
+                results[k] = ""
+    return results
 
 
-# ── 렌더링 헬퍼 ────────────────────────────────────────
+# ── 파이프라인 단계 ─────────────────────────────────────
 
-def render_card(name, label, content, has_search=False):
-    info = PERSONAS[name]
-    search_badge = '<span class="search-tag">🌐 실시간 검색 반영</span><br>' if has_search else ''
+def research_topic(idea: str) -> tuple:
+    """주제 광범위 리서치 → (raw_search, summary)"""
+    queries = {
+        "news": f"{idea} latest news 2025 2026",
+        "tech": f"{idea} technical analysis market trends",
+        "critique": f"{idea} criticism risks failure cases",
+        "academic": f"{idea} research paper academic study",
+    }
+    results = parallel_search(queries)
+    raw = "\n\n".join(f"[{k.upper()}]\n{v}" for k, v in results.items() if v)
+
+    if not raw:
+        return "", "외부 검색 결과가 없습니다 — 페르소나의 일반 도메인 지식만으로 토론합니다."
+
+    summary_prompt = (
+        f"다음은 '{idea[:300]}'에 대한 실시간 외부 검색 결과(뉴스·기술·비판·학술)입니다.\n\n"
+        f"{raw[:5500]}\n\n"
+        "위 자료를 바탕으로 한국어로 요약하세요. 다음을 포함:\n"
+        "1) 주제의 핵심 맥락 (3~4문장)\n"
+        "2) 주요 논쟁점·리스크 (3~5개)\n"
+        "3) 최근 동향과 사실 (2~3개)\n\n"
+        "마크다운 표기(**, ##, ---) 금지. 평문 + 줄바꿈만 사용. "
+        "검색에 없는 사실은 추가하지 마세요. 모르면 모른다고 쓰세요."
+    )
+    try:
+        summary = call_groq(
+            [{"role": "user", "content": summary_prompt}],
+            temperature=0.3,
+            max_tokens=1000,
+        )
+    except Exception as e:
+        summary = f"요약 생성 실패: {e}"
+    return raw, summary
+
+
+def brainstorm_critics(idea: str, summary: str) -> list:
+    """주제에 적합한 비평가 후보 8~10명 추천"""
+    prompt = f"""주제: {idea}
+
+관련 자료 요약:
+{summary[:1800]}
+
+위 주제에 대해 가장 날카롭고 다양한 비판을 할 만한 실제 인물(생존 또는 최근 활발히 활동) 8~10명을 추천하세요.
+
+다양성 기준:
+- 분야: 기술/엔지니어링, 비즈니스/전략, 안전/규제, 디자인/제품, 재무/투자, 운영/실행 중 최소 3~4개 분야 포함
+- 입장: 낙관적 vs 회의적 양쪽 모두 포함
+- 지역: 글로벌 + 한국 양쪽 고려 (한국 산업/시장과 직결되는 주제면 한국 전문가 우선)
+- 최근 5년 내 공개 발언, 저술, 인터뷰가 있는 실존 인물
+
+응답은 ONLY 유효한 JSON 배열. 코드 펜스(```) 절대 금지. 다른 설명 금지:
+[
+  {{"name": "정확한 본명 (한글 또는 영문)", "role": "현재 직책 또는 대표 활동", "why": "이 주제에 왜 적합한지 한 줄"}}
+]
+"""
+    try:
+        resp = call_groq(
+            [{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=1400,
+        )
+        data = _extract_json(resp)
+        if isinstance(data, list):
+            valid = []
+            seen = set()
+            for d in data:
+                if not isinstance(d, dict):
+                    continue
+                name = str(d.get("name", "")).strip()
+                role = str(d.get("role", "")).strip()
+                why = str(d.get("why", "")).strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                valid.append({"name": name, "role": role, "why": why})
+                if len(valid) >= 10:
+                    break
+            return valid
+    except Exception:
+        pass
+    return []
+
+
+def synthesize_persona(name: str, role: str, why: str, idea: str, search_data: str) -> dict:
+    """검색 데이터로 페르소나 카드 합성. 검색 부족하면 보수적으로 작성."""
+    has_search = bool(search_data and search_data.strip())
+    search_section = (
+        search_data[:2500] if has_search else "(검색 결과 없음 — 일반에 알려진 직책·업적에 한해 보수적으로 작성)"
+    )
+    prompt = f"""주제 컨텍스트: {idea}
+
+대상 인물: {name}
+역할: {role}
+이 주제 적합성: {why}
+
+이 인물에 대한 실시간 검색 데이터:
+{search_section}
+
+위 검색 데이터를 근거로 이 인물의 토론 페르소나 카드를 만드세요.
+
+엄격한 제약:
+- 검색에 없는 인용·일화·발언을 만들어내지 마세요. 추측 금지.
+- 검색이 빈약하면 그 인물의 잘 알려진 직책·대표 업적·공개 입장에만 한정해 작성.
+- system_prompt는 한국어로, 토론 참여용으로 작성.
+
+응답은 ONLY 유효한 JSON 객체. 코드 펜스 금지. 다른 설명 금지:
+{{
+  "title": "직책 · 핵심 관점 한 줄",
+  "icon": "이모지 1개",
+  "critique_angle": "이 주제에 대해 어떤 각도로 비판할지 한 줄 (한국어)",
+  "system_prompt": "이 인물의 토론 페르소나 system prompt. 다음을 모두 포함하세요. (영어/한글 섞임 OK)\\n\\nYou must respond ONLY in Korean (한국어). Never use English sentences.\\n모든 응답은 반드시 한국어로만 작성하세요.\\n마크다운 표기(**, ##, ---, * 목록 등)는 절대 사용하지 마세요. 평문만으로 작성하고, 단락 구분은 줄바꿈으로 표시하세요.\\n\\n당신은 {name}입니다.\\n\\n당신의 성격과 사고방식:\\n- (4~6개 항목, 그 인물의 알려진 스타일·관점에 기반)\\n\\n말투:\\n- (3~4개 항목, 구체적 시작 어구나 표현 포함)\\n\\n[실시간 검색 데이터]가 user 메시지에 포함되면 그 내용을 자연스럽게 활용하세요. 검색에 없는 인용은 만들지 마세요.\\n\\n5~6문장으로 답하세요. 추상적 일반론 금지, 구체 사실·숫자·사례 최소 1개 포함."
+}}
+"""
+    try:
+        resp = call_groq(
+            [{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=1600,
+        )
+        data = _extract_json(resp)
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("system_prompt"), str)
+            and isinstance(data.get("title"), str)
+            and len(data["system_prompt"]) > 80
+        ):
+            return {
+                "name": name,
+                "role": role,
+                "why": why,
+                "title": data.get("title", role),
+                "icon": str(data.get("icon", "💬"))[:4],
+                "critique_angle": str(data.get("critique_angle", why))[:200],
+                "system_prompt": data["system_prompt"],
+                "search_basis": search_data[:1200] if has_search else "",
+            }
+    except Exception:
+        pass
+
+    # Fallback: 최소 페르소나
+    return {
+        "name": name,
+        "role": role,
+        "why": why,
+        "title": role or "비평가",
+        "icon": "💬",
+        "critique_angle": why or "비판적 관점",
+        "system_prompt": (
+            "You must respond ONLY in Korean (한국어). Never use English sentences.\n"
+            "모든 응답은 반드시 한국어로만 작성하세요.\n"
+            "마크다운 표기(**, ##, ---, * 목록 등)는 절대 사용하지 마세요. 평문만으로 작성하고, 단락 구분은 줄바꿈으로 표시하세요.\n\n"
+            f"당신은 {name}입니다. 역할: {role}.\n\n"
+            "당신의 알려진 공개 활동과 직책에 기반해 비판적으로 토론에 참여합니다. "
+            "추측이나 만들어낸 인용은 사용하지 않습니다. 모르는 영역은 솔직히 인정합니다.\n\n"
+            "5~6문장으로 답하되 추상적 일반론 금지, 구체 사실·숫자·사례 최소 1개 포함."
+        ),
+        "search_basis": search_data[:1200] if has_search else "",
+    }
+
+
+def build_personas(candidates: list, idea: str) -> list:
+    """후보 → 페르소나 카드 (병렬 검색 + 병렬 합성, 캐시 활용)"""
+    if not candidates:
+        return []
+
+    # 1) 검색 병렬
+    queries = {
+        c["name"]: f'"{c["name"]}" {c.get("role","")} opinion view critique recent statements'
+        for c in candidates
+    }
+    search_results = parallel_search(queries)
+
+    # 2) 페르소나 합성 병렬 (max_workers=4 — Groq rate limit 보호)
+    cache = load_persona_cache()
+    cards = [None] * len(candidates)
+
+    def synth_one(i, c):
+        sd = search_results.get(c["name"], "")
+        cached = cache.get(c["name"].strip())
+        if cached and isinstance(cached, dict) and cached.get("system_prompt"):
+            return i, {
+                **cached,
+                "name": c["name"],
+                "role": c.get("role", cached.get("role", "")),
+                "why": c.get("why", cached.get("why", "")),
+                "search_basis": sd[:1200] if sd else cached.get("search_basis", ""),
+            }
+        card = synthesize_persona(c["name"], c.get("role", ""), c.get("why", ""), idea, sd)
+        # 캐시 저장 (fallback이 아닌 경우만)
+        if card.get("system_prompt") and len(card["system_prompt"]) > 200:
+            cache[c["name"].strip()] = {**card, "cached_at": int(time.time())}
+        return i, card
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(synth_one, i, c) for i, c in enumerate(candidates)]
+        for fut in as_completed(futures):
+            try:
+                i, card = fut.result(timeout=45)
+                cards[i] = card
+            except Exception:
+                pass
+
+    # 캐시 저장 (있다면)
+    try:
+        save_persona_cache(cache)
+    except Exception:
+        pass
+
+    # 색·아이콘 폴백 + None 제거
+    out = []
+    for i, c in enumerate(cards):
+        if c is None:
+            continue
+        c["color"] = COLOR_POOL[i % len(COLOR_POOL)]
+        if not c.get("icon") or len(c.get("icon", "")) > 4:
+            c["icon"] = DEFAULT_ICONS[i % len(DEFAULT_ICONS)]
+        out.append(c)
+    return out
+
+
+def debate_call(persona: dict, conversation_so_far: str, my_prompt: str, idea: str, summary: str = "") -> str:
+    ctx = ""
+    if persona.get("search_basis"):
+        ctx += (
+            f"\n\n[당신({persona['name']})에 관한 실시간 검색 데이터 — 활용 가능, "
+            f"인용은 검색에 명시된 것만 사용]\n{persona['search_basis']}"
+        )
+    if summary:
+        ctx += f"\n\n[주제에 대한 종합 리서치 요약]\n{summary[:1500]}"
+
+    base = f"아이디어: {idea}{ctx}"
+    user_content = (
+        f"{base}\n\n[지금까지의 토론]\n{conversation_so_far}\n\n[당신의 차례]\n{my_prompt}"
+        if conversation_so_far
+        else f"{base}\n\n[당신의 차례]\n{my_prompt}"
+    )
+    return call_groq(
+        [
+            {"role": "system", "content": persona["system_prompt"]},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=0.85,
+        max_tokens=900,
+    )
+
+
+def tag_argument_values(speaker: str, argument: str) -> list:
+    prompt = f"""화자: {speaker}
+논점: {argument[:700]}
+
+위 비판 논점의 핵심 가치 태그를 1~3개의 짧은 한국어 명사구로 뽑으세요.
+예시: '데이터 현실주의', '안전 우선', '실행 속도', '자본 효율', '롱테일 리스크', '규제 적합성', '제품-시장 적합성', '경쟁 차별화', '엔지니어링 깊이', '사용자 경험', '윤리·신뢰'
+
+응답은 ONLY 유효한 JSON 배열. 코드 펜스 금지. 다른 설명 금지:
+["태그1", "태그2"]"""
+    try:
+        resp = call_groq(
+            [{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=200,
+        )
+        data = _extract_json(resp)
+        if isinstance(data, list):
+            return [str(t)[:30] for t in data if isinstance(t, (str, int))][:3]
+    except Exception:
+        pass
+    return []
+
+
+# ── 렌더링 ──────────────────────────────────────────
+
+def _esc(s) -> str:
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def render_persona_card(persona: dict, label: str, content: str):
+    color = persona.get("color", "#888")
+    icon = persona.get("icon", "💬")
+    name = persona.get("name", "")
+    title = persona.get("title", persona.get("role", ""))
+    badge = '<span class="search-tag">🌐 실시간 검색 반영</span><br>' if persona.get("search_basis") else ""
     st.markdown(
-        f'<div class="panel-card" style="border-left: 4px solid {info["color"]};">'
-        f'<div class="panel-name">{info["icon"]} {name} <span style="color:#888;font-size:13px;font-weight:normal;">— {label}</span></div>'
-        f'<div class="panel-title">{info["title"]}</div>'
-        f'{search_badge}'
-        f'{content}'
-        f'</div>',
+        f'<div class="panel-card" style="border-left: 4px solid {color};">'
+        f'<div class="panel-name">{icon} {_esc(name)} '
+        f'<span style="color:#888;font-size:13px;font-weight:normal;">— {_esc(label)}</span></div>'
+        f'<div class="panel-title">{_esc(title)}</div>'
+        f"{badge}"
+        f'<div class="panel-content">{_esc(content)}</div>'
+        f"</div>",
         unsafe_allow_html=True,
     )
 
 
-def debate_call(name, conversation_so_far, my_prompt, idea, context=""):
-    ctx_section = (
-        f"\n\n[실시간 검색 데이터 — {name}의 관점에서 수집된 최신 정보. "
-        f"이 내용을 당신의 논리에 자연스럽게 녹여 활용하세요. "
-        f"검색 결과가 당신의 가치관과 맞지 않으면 반박 근거로도 쓸 수 있습니다.]\n{context}"
-        if context else ""
-    )
-    base = f"아이디어: {idea}{ctx_section}"
-    content = (
-        f"{base}\n\n{conversation_so_far}\n\n{my_prompt}"
-        if conversation_so_far
-        else f"{base}\n\n{my_prompt}"
-    )
-    return call_groq(
-        [
-            {"role": "system", "content": PERSONAS[name]["system_prompt"]},
-            {"role": "user", "content": content},
-        ],
-        temperature=0.8,
+def render_pick_card(persona: dict):
+    color = persona.get("color", "#888")
+    st.markdown(
+        f'<div class="pick-card" style="border-left: 4px solid {color};">'
+        f'<div class="pn">{persona.get("icon","💬")} {_esc(persona.get("name",""))}</div>'
+        f'<div class="pt">{_esc(persona.get("title",""))}</div>'
+        f'<div class="pa">{_esc(persona.get("critique_angle",""))}</div>'
+        f"</div>",
+        unsafe_allow_html=True,
     )
 
 
-# ── 세션 상태 초기화 ────────────────────────────────────
-for _key, _default in [
-    ("debate_log", []),
-    ("debate_done", False),
-    ("user_idea", ""),
-    ("votes", []),
-    ("verdict", ""),
-    ("verdict_done", False),
-    ("search_queries", {}),
-    ("search_contexts", {}),
-]:
-    if _key not in st.session_state:
-        st.session_state[_key] = _default
+# ── 세션 상태 ──────────────────────────────────────
+DEFAULTS = {
+    "phase": 0,                    # 0:input, 1:select, 2:debate-running, 3:result+vote
+    "user_idea": "",
+    "raw_search": "",
+    "summary": "",
+    "personas": [],                # 추천된 페르소나 카드 리스트
+    "selected_indices": [],        # personas 내 선택된 인덱스
+    "debate_log": [],              # [(persona_dict, label, content)]
+    "votes": [],
+    "verdict": "",
+    "pipeline_error": "",
+}
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v if not isinstance(v, list) else list(v)
 
 
-# ── 메인 ──────────────────────────────────────────────
-st.markdown("# 🥊 AI 거물들의 난상토론")
-st.caption("실리콘밸리 최고 책임자 5명이 당신의 아이디어를 뜯어봅니다.")
+def reset_all():
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v if not isinstance(v, list) else list(v)
 
-with st.form("debate_form", clear_on_submit=True):
-    user_idea = st.text_area(
-        "아이디어 / 전략 / 기술 접근",
-        height=120,
-        placeholder="예: LLM을 활용해 모든 기업의 백오피스를 자동화하는 AI 에이전트를 개발하겠습니다...",
+
+# ── 메인 ────────────────────────────────────────
+st.markdown("# 🥊 AI 비평가 토론장")
+st.caption("아이디어 → 실시간 리서치 → 비평가 추천 → 선택한 인물들의 토론 → 대표 판결")
+st.markdown("")
+
+phase = st.session_state.phase
+
+# === Phase 0: 아이디어 입력 ===
+if phase == 0:
+    if st.session_state.pipeline_error:
+        st.error(st.session_state.pipeline_error)
+        st.session_state.pipeline_error = ""
+
+    with st.form("idea_form", clear_on_submit=False):
+        idea_input = st.text_area(
+            "당신의 아이디어 / 전략 / 질문",
+            height=140,
+            placeholder="예: 한국 자율주행 검증 SaaS를 일본 OEM 시장에 진출시키려고 합니다. 진출 전략과 기술 스택은...",
+        )
+        submitted = st.form_submit_button("🔬 리서치 + 비평가 추천")
+
+    if submitted and idea_input.strip():
+        idea_clean = idea_input.strip()
+        st.session_state.user_idea = idea_clean
+
+        with st.spinner("🌐 외부 데이터 수집 + 요약 중..."):
+            raw, summary = research_topic(idea_clean)
+            st.session_state.raw_search = raw
+            st.session_state.summary = summary
+
+        with st.spinner("🤔 적합한 비평가 후보 추출 중..."):
+            candidates = brainstorm_critics(idea_clean, summary)
+
+        if not candidates:
+            st.session_state.pipeline_error = "비평가 후보 생성에 실패했습니다. 다시 시도해주세요."
+            st.rerun()
+        else:
+            with st.spinner(f"🧬 {len(candidates)}명의 페르소나 카드 빌드 중 (병렬 검색·합성)..."):
+                personas = build_personas(candidates, idea_clean)
+            if not personas:
+                st.session_state.pipeline_error = "페르소나 합성에 실패했습니다. 다시 시도해주세요."
+                st.rerun()
+            else:
+                st.session_state.personas = personas
+                st.session_state.phase = 1
+                st.rerun()
+
+
+# === Phase 1: 요약 + 비평가 선택 ===
+elif phase == 1:
+    st.markdown("#### 💡 입력한 아이디어")
+    st.markdown(
+        f'<div class="panel-card">{_esc(st.session_state.user_idea)}</div>',
+        unsafe_allow_html=True,
     )
-    submitted = st.form_submit_button("🥊 토론 시작")
 
-if submitted and user_idea.strip():
-    st.session_state.debate_log = []
-    st.session_state.votes = []
-    st.session_state.verdict = ""
-    st.session_state.verdict_done = False
-    st.session_state.search_queries = {}
-    st.session_state.search_contexts = {}
-    st.session_state.user_idea = user_idea.strip()
-    idea = user_idea.strip()
-    log = st.session_state.debate_log
+    if st.session_state.summary:
+        st.markdown("#### 📚 외부 데이터 수집 요약")
+        st.markdown(
+            f'<div class="summary-card">{_esc(st.session_state.summary)}</div>',
+            unsafe_allow_html=True,
+        )
 
-    def get_log_text():
-        return "\n\n".join(f"[{n} — {l}]: {c}" for n, l, c in log)
+    st.markdown("")
+    st.markdown("#### 🎭 추천 비평가 — 토론에 참여시킬 인물 2~5명을 선택")
+    st.caption("AI가 주제에 맞춰 실시간으로 합성한 페르소나입니다. 검색 데이터에 근거한 인물만 카드에 표시됩니다.")
 
+    personas = st.session_state.personas
+    cols = st.columns(2)
+    for i, p in enumerate(personas):
+        with cols[i % 2]:
+            render_pick_card(p)
+            checked = i in st.session_state.selected_indices
+            label = "✅ 선택됨" if checked else "+ 토론 참여"
+            if st.button(label, key=f"pick_{i}", type="secondary"):
+                if checked:
+                    st.session_state.selected_indices.remove(i)
+                else:
+                    if len(st.session_state.selected_indices) < 5:
+                        st.session_state.selected_indices.append(i)
+                    else:
+                        st.warning("최대 5명까지 선택 가능합니다.")
+                st.rerun()
+
+    n = len(st.session_state.selected_indices)
     st.markdown("---")
+    st.caption(f"선택된 인원: **{n}명** (2~5명 권장)")
 
-    # ── 검색 단계 ──────────────────────────────────────
-    with st.spinner("🌐 각 전문가 관점으로 실시간 검색 중..."):
-        try:
-            queries, contexts = build_search_contexts(idea)
-            st.session_state.search_queries = queries
-            st.session_state.search_contexts = contexts
-        except Exception:
-            queries, contexts = {}, {}
-
-    # Turn 1: Musk
-    st.markdown("### 🔴 Turn 1")
-    with st.spinner("🚀 Elon Musk 발언 중..."):
-        try:
-            t1 = debate_call(
-                "Elon Musk", "",
-                "이 아이디어의 핵심 전제 중 가장 잘못된 것 하나를 골라 집중 공격하세요. "
-                "왜 그 전제가 틀렸는지 당신의 직접 경험이나 구체적 숫자를 들어 말하고, "
-                "마지막은 상대가 바로 답하기 어려운 질문으로 끝내세요. 4~5문장.",
-                idea, context=contexts.get("Elon Musk", ""),
-            )
-        except Exception as e:
-            t1 = f"오류: {e}"
-    log.append(("Elon Musk", "선제 비판", t1))
-
-    # Turn 2: Hassabis
-    st.markdown("### 🔵 Turn 2")
-    with st.spinner("🧬 Demis Hassabis 발언 중..."):
-        try:
-            t2 = debate_call(
-                "Demis Hassabis", get_log_text(),
-                f"Musk가 방금 말했습니다: \"{t1[:150]}...\"\n\n"
-                "Musk의 주장에 대해 기초 과학과 AGI의 관점에서 동의하거나 반박하세요. "
-                "알파고나 알파폴드를 개발한 DeepMind의 강화학습/범용 AI 경험을 바탕으로, "
-                "더 근본적인 해결책이 무엇인지 제시하고 통찰력 있는 질문으로 끝내세요. 4~5문장.",
-                idea, context=contexts.get("Demis Hassabis", ""),
-            )
-        except Exception as e:
-            t2 = f"오류: {e}"
-    log.append(("Demis Hassabis", "과학/AGI 관점 반론", t2))
-
-    # Turn 3: Amodei
-    st.markdown("### 🟠 Turn 3")
-    with st.spinner("📈 Dario Amodei 발언 중..."):
-        try:
-            t3 = debate_call(
-                "Dario Amodei", get_log_text(),
-                f"앞서 Musk: \"{t1[:100]}...\"\nHassabis: \"{t2[:100]}...\" 라고 했습니다.\n\n"
-                "두 사람의 논의를 '스케일링 법칙(Scaling Laws)'과 'AI 안전성(Alignment)' 관점에서 평가하세요. "
-                "Anthropic의 관점에서 모델이 커질 때 발생할 수 있는 잠재적 위험을 지적하고, "
-                "어떻게 통제할 것인지 묻는 예리한 질문으로 끝내세요. 4~5문장.",
-                idea, context=contexts.get("Dario Amodei", ""),
-            )
-        except Exception as e:
-            t3 = f"오류: {e}"
-    log.append(("Dario Amodei", "스케일 및 안전성 지적", t3))
-
-    # Turn 4: Karpathy
-    st.markdown("### 🟢 Turn 4")
-    with st.spinner("🧠 Andrej Karpathy 조율 중..."):
-        try:
-            t4 = debate_call(
-                "Andrej Karpathy", get_log_text(),
-                "앞선 세 명(거시적 비전, 과학, 안전)의 이야기를 듣고, "
-                "현장 실무자이자 데이터 중심(Data-centric) 엔지니어의 시각으로 판을 정리하세요. "
-                "'결국 문제는 고품질 데이터와 모델 최적화에 있다'는 점을 짚어내며 "
-                "현실적인 피드백을 주고 실무적인 질문으로 끝내세요. 4~5문장.",
-                idea, context=contexts.get("Andrej Karpathy", ""),
-            )
-        except Exception as e:
-            t4 = f"오류: {e}"
-    log.append(("Andrej Karpathy", "실무/데이터 관점 조율", t4))
-
-    # Turn 5: Urmson
-    st.markdown("### 🟣 Turn 5 — 마무리")
-    with st.spinner("🛡️ Chris Urmson 마무리 중..."):
-        try:
-            t5 = debate_call(
-                "Chris Urmson", get_log_text(),
-                "네 명의 AI 전문가들이 소프트웨어와 스케일링을 논할 때, "
-                "당신은 자율주행과 로보틱스가 '현실 물리 세계'와 부딪히는 지점(규제, 생명 직결 안전성, 하드웨어 한계)을 지적하며 토론을 마무리하세요. "
-                "소프트웨어의 오류가 현실에서 어떤 대가를 치르는지 상기시키며, 타협 없는 안전 최우선 기조를 유지하세요. 4~5문장.",
-                idea, context=contexts.get("Chris Urmson", ""),
-            )
-        except Exception as e:
-            t5 = f"오류: {e}"
-    log.append(("Chris Urmson", "물리 세계/안전 마무리", t5))
-
-    st.session_state.votes = [False] * len(log)
-    st.session_state.debate_done = True
-    st.rerun()
+    cc = st.columns([1, 1])
+    with cc[0]:
+        if st.button("🥊 토론 시작", key="start_debate", type="primary", disabled=(n < 2)):
+            st.session_state.phase = 2
+            st.session_state.debate_log = []
+            st.rerun()
+    with cc[1]:
+        if st.button("← 다시 입력", key="back_input", type="secondary"):
+            reset_all()
+            st.rerun()
 
 
-# ── 투표 + 판결 UI ─────────────────────────────────────
-if st.session_state.debate_done and not submitted:
+# === Phase 2: 토론 실행 ===
+elif phase == 2:
+    selected = [st.session_state.personas[i] for i in st.session_state.selected_indices]
+    idea = st.session_state.user_idea
+    summary = st.session_state.summary
+    n_total = len(selected)
+
+    st.markdown("#### 💡 아이디어")
+    st.markdown(f'<div class="panel-card">{_esc(idea)}</div>', unsafe_allow_html=True)
+
+    if not st.session_state.debate_log:
+        log = []
+        for turn_idx, persona in enumerate(selected):
+            if turn_idx == 0:
+                label = "선제 비판"
+                my_prompt = (
+                    "이 아이디어의 가장 잘못된 핵심 전제 하나를 골라 집중 공격하세요. "
+                    "왜 그것이 틀렸는지 당신의 알려진 경험·발언·구체적 숫자로 근거를 대고, "
+                    "마지막은 상대가 답하기 어려운 날카로운 질문 하나로 끝내세요. "
+                    "5~6문장. 추상 일반론 금지. 구체 사실·숫자·사례 최소 1개 포함."
+                )
+            elif turn_idx == n_total - 1:
+                label = "마무리"
+                my_prompt = (
+                    "마지막 발언자로서 앞선 모든 비판을 종합한 뒤, 그들이 놓친 가장 큰 블라인드스팟을 짚으며 "
+                    "토론을 마무리하세요. 앞선 발언자 중 최소 2명을 직접 거명하며 그들 주장의 약점을 지적하세요. "
+                    "5~6문장. 추상 일반론 금지. 구체 사실·숫자·사례 최소 1개 포함."
+                )
+            else:
+                label = "반론·보완"
+                my_prompt = (
+                    "이전 발언자(들)의 비판을 듣고, 당신만의 고유한 관점으로 받아치세요. "
+                    "이전 발언자 이름을 한 번 이상 직접 거명하며 그 논점 중 하나를 정확히 짚어 반박/보완하세요. "
+                    "이전 발언과 겹치는 논점은 반복하지 말고 새로운 각도/층위를 더하세요. "
+                    "마지막은 다음 사람이 답하기 어려운 질문으로 끝내세요. "
+                    "5~6문장. 추상 일반론 금지. 구체 사실·숫자·사례 최소 1개 포함."
+                )
+
+            st.markdown(f"### Turn {turn_idx + 1} — {persona.get('icon','💬')} {persona['name']}")
+            with st.spinner(f"{persona.get('icon','💬')} {persona['name']} 발언 중..."):
+                conv = "\n\n".join(f"[{l[0]['name']} — {l[1]}]: {l[2]}" for l in log)
+                try:
+                    out = debate_call(persona, conv, my_prompt, idea, summary)
+                except Exception as e:
+                    out = f"오류: {e}"
+            log.append((persona, label, out))
+            render_persona_card(persona, label, out)
+
+        st.session_state.debate_log = log
+        st.session_state.votes = [False] * len(log)
+        st.session_state.phase = 3
+        st.rerun()
+
+
+# === Phase 3: 결과 + 투표 + 판결 ===
+elif phase == 3:
     log = st.session_state.debate_log
     idea = st.session_state.user_idea
-    queries = st.session_state.get("search_queries", {})
-    contexts = st.session_state.get("search_contexts", {})
+    summary = st.session_state.summary
 
-    def get_log_text():
-        return "\n\n".join(f"[{n} — {l}]: {c}" for n, l, c in log)
+    st.markdown("#### 💡 입력한 아이디어")
+    st.markdown(f'<div class="panel-card">{_esc(idea)}</div>', unsafe_allow_html=True)
 
-    st.markdown("---")
-
-    if queries:
-        with st.expander("🌐 실시간 검색 데이터 — 토론 근거로 사용됨"):
-            for name, query in queries.items():
-                info = PERSONAS[name]
-                st.markdown(f"**{info['icon']} {name}**")
-                st.code(query, language=None)
-                ctx = contexts.get(name, "")
-                if ctx:
-                    st.markdown(
-                        f'<div style="background:#111;border-radius:8px;padding:12px;'
-                        f'font-size:13px;color:#aaa;line-height:1.6;">{ctx}</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.caption("검색 결과 없음 — 페르소나 기본 가치관으로 추론")
-                st.markdown("")
+    if summary:
+        with st.expander("📚 외부 데이터 요약 (참고)"):
+            st.markdown(
+                f'<div class="summary-card">{_esc(summary)}</div>',
+                unsafe_allow_html=True,
+            )
 
     st.markdown("### 💬 토론 결과")
-    st.caption("마음에 드는 논점에 👍 투표 → 최종 판결에 반영 + 이후 토론에도 이 가치관이 누적됩니다.")
+    st.caption("마음에 드는 비판에 👍 → 판결에 가중 + 향후 토론에도 가치관이 누적됩니다.")
 
-    TURN_HEADERS = [
-        "### 🔴 Turn 1 — 선제 비판", 
-        "### 🔵 Turn 2 — 과학적 반론", 
-        "### 🟠 Turn 3 — 스케일과 리스크",
-        "### 🟢 Turn 4 — 실무 조율", 
-        "### 🟣 Turn 5 — 현실계 마무리", 
-    ]
-
-    for i, (name, label, content) in enumerate(log):
-        st.markdown(TURN_HEADERS[i] if i < len(TURN_HEADERS) else f"### Turn {i + 1}")
-        has_search = bool(contexts.get(name, ""))
-        render_card(name, label, content, has_search=has_search)
-
+    for i, (persona, label, content) in enumerate(log):
+        st.markdown(f"### Turn {i + 1}")
+        render_persona_card(persona, label, content)
         voted = st.session_state.votes[i] if i < len(st.session_state.votes) else False
-        css_class = "vote-btn-active" if voted else "vote-btn"
-        btn_text = "✅ 선택됨" if voted else "👍 이 논점 선택"
-
         col, _ = st.columns([3, 7])
         with col:
-            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-            if st.button(btn_text, key=f"vote_{i}"):
+            text = "✅ 선택됨" if voted else "👍 이 논점 선택"
+            if st.button(text, key=f"vote_{i}", type="secondary"):
                 st.session_state.votes[i] = not voted
                 st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── 판결 섹션 ────────────────────────────────────
     st.markdown("---")
     st.markdown("### ⚖️ 최종 판결 — 에이스웍스 코리아 대표")
 
-    if not st.session_state.verdict_done:
-        voted_count = sum(st.session_state.votes)
-        if voted_count == 0:
-            st.caption("투표 없이도 판결 가능 | 논점을 선택하면 판결에 가중 반영됩니다.")
+    if not st.session_state.verdict:
+        n_voted = sum(st.session_state.votes)
+        if n_voted == 0:
+            st.caption("투표 없이도 판결 가능 | 선택하면 가중 반영됩니다.")
         else:
-            st.caption(f"선택된 논점 {voted_count}개 — 판결 및 이후 토론에 반영됩니다.")
+            st.caption(f"선택된 논점 {n_voted}개 — 판결 및 향후 토론에 반영됩니다.")
 
-        if st.button("⚖️ 최종 판결 받기"):
-            voted_args = [
-                f"[{log[i][0]} — {log[i][1]}]: {log[i][2]}"
-                for i, v in enumerate(st.session_state.votes) if v
-            ]
-            history = load_vote_history()
-            historical_args = [
-                f"[{v['speaker']}]: {v['argument'][:200]}"
-                for v in history[-10:]
-            ]
-
-            judge_system = """You must respond ONLY in Korean (한국어). Never use English sentences.
-모든 응답은 반드시 한국어로만 작성하세요.
-
-당신은 에이스웍스 코리아의 대표입니다.
-
-당신의 성격과 배경:
-- 자율주행 및 AI 소프트웨어 개발 현장을 직접 뛰어온 실무형 리더다.
-- 세계적 거물들 5명의 이론을 모두 존중하지만, 한국 시장과 실제 납품 현실이 다르다는 걸 안다.
-- 화려한 비전이나 거시적 두려움보다 "우리 팀이 내일부터 실행할 수 있는가"를 먼저 본다.
-- 거물들의 토론을 다 들었지만, 결국 회사의 방향을 결정하는 것은 나라는 책임감이 있다.
-- 좋은 말도, 나쁜 말도 솔직하게 한다. 애매하게 넘어가지 않는다.
-
-판결 방식:
-- 5명의 전문가 중 누가 가장 핵심을 찔렀는지 짚는다.
-- 사업적으로 지금 당장 실행 가능한지 판단한다.
-- 최종 결론은 반드시 "채택 / 수정 후 채택 / 기각" 중 하나로 명확하게 내린다.
-- 결론 뒤에 우리 개발/영업 팀에게 내리는 짧고 강력한 지시를 한 마디 덧붙인다."""
-
-            voted_section = ""
-            if voted_args:
-                voted_section += (
-                    "\n\n[이번 토론에서 팀이 중요하다고 선택한 논점 — 판결 시 가중 반영]\n"
-                    + "\n\n".join(voted_args)
-                )
-            if historical_args:
-                voted_section += (
-                    "\n\n[과거 누적 데이터: 이 팀이 반복적으로 중요하게 평가한 논점 유형 — 판사 가치관 참고]\n"
-                    + "\n".join(historical_args)
+        if st.button("⚖️ 최종 판결 받기", key="judge_btn", type="primary"):
+            with st.spinner("⚖️ 판결 작성 중..."):
+                voted_args = [
+                    f"[{log[i][0]['name']} — {log[i][1]}]: {log[i][2]}"
+                    for i, v in enumerate(st.session_state.votes)
+                    if v
+                ]
+                history = load_vote_history()
+                tag_counts = {}
+                for v in history[-50:]:
+                    for t in v.get("value_tags", []) or []:
+                        tag_counts[t] = tag_counts.get(t, 0) + 1
+                top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])[:8]
+                tag_summary = (
+                    ", ".join(f"{t}({c}회)" for t, c in top_tags)
+                    if top_tags
+                    else "(아직 누적 데이터 없음)"
                 )
 
-            judge_prompt = f"""아이디어: {idea}
+                full_log = "\n\n".join(f"[{p['name']} — {l}]: {c}" for p, l, c in log)
+                judge_system = (
+                    "You must respond ONLY in Korean (한국어). Never use English sentences.\n"
+                    "모든 응답은 반드시 한국어로만 작성하세요.\n"
+                    "마크다운 표기(**, ##, ---, * 목록 등)는 절대 사용하지 마세요. "
+                    "평문만으로 작성하고, 단락 구분은 줄바꿈으로 표시하세요.\n\n"
+                    "당신은 에이스웍스 코리아의 대표입니다.\n\n"
+                    "당신의 성격과 배경:\n"
+                    "- 자율주행 및 AI 소프트웨어 개발 현장을 직접 뛰어온 실무형 리더다.\n"
+                    "- 비평가들의 이론을 존중하지만 한국 시장과 실제 납품 현실이 다르다는 걸 안다.\n"
+                    "- 화려한 비전이나 거시적 두려움보다 \"우리 팀이 내일부터 실행할 수 있는가\"를 먼저 본다.\n"
+                    "- 좋은 말도 나쁜 말도 솔직하게 한다. 애매하게 넘어가지 않는다.\n\n"
+                    "판결 방식:\n"
+                    "- 비평가 중 누가 가장 핵심을 찔렀는지 짚는다.\n"
+                    "- 사업적으로 지금 당장 실행 가능한지 판단한다.\n"
+                    "- 최종 결론은 반드시 \"채택 / 수정 후 채택 / 기각\" 중 하나로 명확하게 내린다.\n"
+                    "- 팀이 가중 표시한 논점, 누적 가치관 태그를 판결 기조에 반영한다.\n"
+                    "- 결론 뒤에 우리 개발/영업 팀에게 짧고 강력한 지시를 한 마디 덧붙인다."
+                )
+                voted_section = ""
+                if voted_args:
+                    voted_section += (
+                        "\n\n[이번 토론에서 팀이 가중 선택한 논점]\n" + "\n\n".join(voted_args)
+                    )
+                voted_section += (
+                    f"\n\n[누적 가치관 태그 — 이 팀이 반복적으로 중요시한 가치]\n{tag_summary}"
+                )
 
-전체 토론 (총 5명 참여):
-{get_log_text()}
-{voted_section}
-
-위 거물 5인의 난상토론을 바탕으로 에이스웍스 코리아 대표로서 최종 판결을 내려주세요.
-팀이 선택한 논점이 있다면 그것을 특별히 무겁게 다루고, 과거 가치관 데이터도 판결 기조에 반영하세요.
-
-[판결문 구조]
-① 토론 핵심 쟁점 요약 (2~3줄)
-② 5명의 거물 중 가장 타당했던 논점 (혹은 복합적 판단)
-③ 사업적 관점 최종 판단 (실행 가능성과 현실성 집중)
-④ 결론: 채택 / 수정 후 채택 / 기각 — 이유 한 문장
-⑤ 우리 팀에게 한 마디 (지시사항)"""
-
-            with st.spinner("⚖️ 최종 판결 작성 중..."):
+                judge_prompt = (
+                    f"아이디어: {idea}\n\n"
+                    f"전체 토론 ({len(log)}명 참여):\n{full_log}"
+                    f"{voted_section}\n\n"
+                    "위 토론을 바탕으로 에이스웍스 코리아 대표로서 최종 판결을 내려주세요. "
+                    "팀이 선택한 논점은 특별히 무겁게 다루고, 누적 가치관도 판결 기조에 반영하세요.\n\n"
+                    "[판결문 구조 — 평문, 줄바꿈으로 단락 구분, 마크다운 금지]\n"
+                    "① 토론 핵심 쟁점 요약 (2~3줄)\n"
+                    "② 비평가 중 가장 타당했던 논점 (혹은 복합 판단)\n"
+                    "③ 사업적 관점 최종 판단 (실행 가능성 중심)\n"
+                    "④ 결론: 채택 / 수정 후 채택 / 기각 — 이유 한 문장\n"
+                    "⑤ 우리 팀에게 한 마디 (지시사항)"
+                )
                 try:
                     verdict = call_groq(
                         [
                             {"role": "system", "content": judge_system},
                             {"role": "user", "content": judge_prompt},
                         ],
-                        temperature=0.65,
+                        temperature=0.6,
+                        max_tokens=1400,
                     )
                 except Exception as e:
                     verdict = f"오류: {e}"
 
-            st.session_state.verdict = verdict
-            st.session_state.verdict_done = True
+                # 가치 태깅 → 누적 학습
+                new_votes = []
+                for i, v in enumerate(st.session_state.votes):
+                    if not v:
+                        continue
+                    speaker = log[i][0]["name"]
+                    argument = log[i][2]
+                    try:
+                        tags = tag_argument_values(speaker, argument)
+                    except Exception:
+                        tags = []
+                    new_votes.append(
+                        {
+                            "speaker": speaker,
+                            "label": log[i][1],
+                            "argument": argument,
+                            "value_tags": tags,
+                            "topic": idea[:200],
+                            "ts": int(time.time()),
+                        }
+                    )
+                if new_votes:
+                    save_vote_history(new_votes)
 
-            new_votes = [
-                {"speaker": log[i][0], "label": log[i][1], "argument": log[i][2]}
-                for i, v in enumerate(st.session_state.votes) if v
-            ]
-            if new_votes:
-                save_vote_history(new_votes)
-
-            st.rerun()
-
-    if st.session_state.verdict_done:
+                st.session_state.verdict = verdict
+                st.rerun()
+    else:
         if sum(st.session_state.votes) > 0:
-            st.info(f"선택된 논점 {sum(st.session_state.votes)}개가 이번 판결 및 향후 토론에 반영되었습니다.")
-
+            st.info(
+                f"선택된 논점 {sum(st.session_state.votes)}개가 판결 및 향후 토론에 반영되었습니다."
+            )
         st.markdown(
             f'<div class="panel-card" style="border-left: 4px solid #FFD60A; background: #1e1a00;">'
             f'<div class="panel-name">⚖️ 에이스웍스 코리아 대표</div>'
             f'<div class="panel-title">최종 판결</div>'
-            f'{st.session_state.verdict}'
-            f'</div>',
+            f'<div class="panel-content">{_esc(st.session_state.verdict)}</div>'
+            f"</div>",
             unsafe_allow_html=True,
         )
         st.markdown("---")
-        st.success("✅ 토론 완료")
+        if st.button("🔄 다른 아이디어로 다시", key="reset_btn", type="primary"):
+            reset_all()
+            st.rerun()
