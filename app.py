@@ -16,8 +16,21 @@ try:
 except ImportError:
     pass
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+def _load_key(name: str) -> str:
+    # 1순위: 환경변수 (.env 포함). 2순위: Streamlit Cloud secrets.
+    val = os.environ.get(name, "")
+    if val:
+        return val
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        pass
+    return ""
+
+
+GROQ_API_KEY = _load_key("GROQ_API_KEY")
+TAVILY_API_KEY = _load_key("TAVILY_API_KEY")
 VOTES_FILE = "votes_history.json"
 PERSONA_CACHE_FILE = "personas_cache.json"
 
