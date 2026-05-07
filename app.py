@@ -34,6 +34,7 @@ GROQ_API_KEY = _load_key("GROQ_API_KEY")
 TAVILY_API_KEY = _load_key("TAVILY_API_KEY")
 VOTES_FILE = "votes_history.json"
 PERSONA_CACHE_FILE = "personas_cache.json"
+ACEWORKS_CATALOG_FILE = "aceworks_catalog.json"
 
 # 모델 레지스트리 — 단계별 최적 모델
 # gpt-oss-120b가 이 키에서 한국어 품질 최상 (실 테스트 검증). 폴백은 자동.
@@ -657,6 +658,260 @@ def _korean_tokenize(text: str) -> list:
     return [t for t in tokens if len(t) >= 2]
 
 
+# ── AceWorks 제품 카탈로그 (tool calling용) ──────────────────
+
+_CATALOG_CACHE = None
+
+
+def load_aceworks_catalog() -> dict:
+    global _CATALOG_CACHE
+    if _CATALOG_CACHE is not None:
+        return _CATALOG_CACHE
+    if os.path.exists(ACEWORKS_CATALOG_FILE):
+        try:
+            with open(ACEWORKS_CATALOG_FILE, encoding="utf-8") as f:
+                _CATALOG_CACHE = json.load(f)
+        except Exception:
+            _CATALOG_CACHE = {}
+    else:
+        _CATALOG_CACHE = {}
+    return _CATALOG_CACHE
+
+
+def tool_get_aceworks_products(domain: str = "all", keyword: str = "") -> str:
+    """tool 함수 — domain/keyword로 제품 필터해서 사람이 읽기 쉬운 텍스트 반환."""
+    catalog = load_aceworks_catalog()
+    products = catalog.get("products", [])
+    if not products:
+        return "카탈로그가 비어있습니다."
+
+    # 도메인 필터
+    domain = (domain or "all").lower().strip()
+    if domain != "all":
+        products = [p for p in products if p.get("domain", "").lower() == domain]
+
+    # 키워드 필터
+    if keyword:
+        kw = keyword.lower().strip()
+        products = [
+            p for p in products
+            if kw in p.get("name", "").lower()
+            or kw in p.get("description", "").lower()
+            or kw in p.get("category", "").lower()
+        ]
+
+    if not products:
+        return f"매칭되는 제품이 없습니다 (domain={domain}, keyword={keyword})."
+
+    lines = [f"매칭된 제품 {len(products)}개:"]
+    for p in products[:15]:
+        spec = f" [{p['spec_highlight']}]" if p.get("spec_highlight") else ""
+        lines.append(
+            f"• {p['name']} ({p.get('category','')}, domain={p.get('domain','')}){spec}\n"
+            f"  → {p.get('description','')}"
+        )
+    return "\n".join(lines)
+
+
+def tool_get_company_facts(field: str = "all") -> str:
+    """tool 함수 — 회사 사실 조회. field: locations, partners, customer_profile, competitive_position, scale, all"""
+    catalog = load_aceworks_catalog()
+    field = (field or "all").lower().strip()
+
+    out = []
+    if field in ("all", "scale"):
+        s = catalog.get("company", {}).get("scale", {})
+        if s:
+            out.append("[규모]\n" + ", ".join(f"{k}: {v}" for k, v in s.items()))
+    if field in ("all", "locations"):
+        locs = catalog.get("company", {}).get("locations", [])
+        if locs:
+            out.append("[거점]\n" + "\n".join(f"• {l['city']} — {l.get('type','')}" for l in locs))
+    if field in ("all", "partners"):
+        ps = catalog.get("company", {}).get("global_partners", [])
+        if ps:
+            out.append("[글로벌 파트너]\n" + "\n".join(
+                f"• {p['name']} ({p.get('country','')}) — {p.get('domain','')}" for p in ps
+            ))
+    if field in ("all", "customer_profile"):
+        cp = catalog.get("customer_profile", {})
+        if cp:
+            out.append("[고객 프로파일]\n" + "\n".join(f"{k}: {v}" for k, v in cp.items()))
+    if field in ("all", "competitive_position"):
+        c = catalog.get("competitive_position", {})
+        if c:
+            out.append("[경쟁 포지션]\n" + "\n".join(f"{k}: {v}" for k, v in c.items()))
+    if field in ("all", "tool_integrations"):
+        ts = catalog.get("tool_integrations", [])
+        if ts:
+            out.append("[연동 도구]\n" + ", ".join(ts))
+
+    return "\n\n".join(out) if out else f"필드 '{field}'에 해당하는 정보가 없습니다."
+
+
+# OpenAI tool calling 스키마 — Groq gpt-oss-120b 호환
+ACEWORKS_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_aceworks_products",
+            "description": (
+                "에이스웍스 코리아의 제품 카탈로그를 조회. 아이디어가 어떤 자사 제품·도메인과 맞닿는지 "
+                "판단할 때 호출하세요. 도메인이나 키워드로 필터링 가능."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "enum": [
+                            "ev", "autonomous_driving", "hydrogen",
+                            "commercial_vehicle", "vision", "lighting",
+                            "integration", "all",
+                        ],
+                        "description": "사업 도메인 필터. 'all'이면 전체.",
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "선택 — 제품명·기술명·카테고리에서 키워드 검색 (예: HILS, BMS, 자율주행)",
+                    },
+                },
+                "required": ["domain"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_company_facts",
+            "description": (
+                "에이스웍스 회사 사실 조회 (규모, 거점, 글로벌 파트너, 고객 프로파일, 경쟁 포지션, 연동 도구). "
+                "아이디어 평가 시 회사 현실을 정확히 짚어야 할 때 호출."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "enum": [
+                            "scale", "locations", "partners",
+                            "customer_profile", "competitive_position",
+                            "tool_integrations", "all",
+                        ],
+                        "description": "조회할 필드.",
+                    }
+                },
+                "required": ["field"],
+            },
+        },
+    },
+]
+
+
+_TOOL_REGISTRY = {
+    "get_aceworks_products": tool_get_aceworks_products,
+    "get_company_facts": tool_get_company_facts,
+}
+
+
+def _execute_tool_call(name: str, args: dict) -> str:
+    fn = _TOOL_REGISTRY.get(name)
+    if not fn:
+        return f"오류: 알 수 없는 도구 '{name}'"
+    try:
+        return fn(**(args or {}))
+    except TypeError as e:
+        return f"오류: 인자 불일치 — {e}"
+    except Exception as e:
+        return f"도구 실행 실패: {type(e).__name__}: {e}"
+
+
+def call_groq_with_tools(
+    messages: list,
+    tools: list,
+    temperature: float = 0.6,
+    max_tokens: int = 2000,
+    model: str = None,
+    max_rounds: int = 4,
+) -> tuple:
+    """Tool calling 루프. 모델이 tool_calls 반환하면 실행 후 다시 호출. 최종 텍스트 + 사용된 tool 로그 반환."""
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY 환경변수가 설정되지 않았습니다.")
+    client = Groq(api_key=GROQ_API_KEY)
+    chain = [model] + [m for m in FALLBACK_CHAIN if m != model] if model else list(FALLBACK_CHAIN)
+    tool_log = []
+
+    for round_idx in range(max_rounds):
+        last_err = None
+        msg = None
+        for m in chain:
+            try:
+                resp = client.chat.completions.create(
+                    model=m,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                msg = resp.choices[0].message
+                break
+            except Exception as e:
+                last_err = e
+                err = str(e).lower()
+                if any(k in err for k in ["429", "rate_limit", "quota", "404", "decommission", "not found"]):
+                    continue
+                # tools 미지원 모델 → tools 없이 재시도
+                if "tool" in err or "function" in err:
+                    try:
+                        resp = client.chat.completions.create(
+                            model=m, messages=messages,
+                            temperature=temperature, max_tokens=max_tokens,
+                        )
+                        msg = resp.choices[0].message
+                        break
+                    except Exception as e2:
+                        last_err = e2
+                        continue
+                raise
+        if msg is None:
+            raise RuntimeError(f"Tool calling 호출 실패: {last_err}")
+
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            return clean_response(msg.content or ""), tool_log
+
+        # tool_calls 실행 — assistant 메시지 추가 후 각 tool 결과 추가
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        })
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            except json.JSONDecodeError:
+                args = {}
+            result = _execute_tool_call(tc.function.name, args)
+            tool_log.append({"name": tc.function.name, "args": args, "result_preview": result[:200]})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result,
+            })
+
+    # max_rounds 초과 — 마지막 assistant 응답 반환 (도구만 부르고 마무리 못한 케이스)
+    final = clean_response(getattr(msg, "content", "") or "")
+    return final or "(도구 호출 후 마무리 응답을 받지 못했습니다)", tool_log
+
+
 def retrieve_similar_votes(idea: str, k: int = 3, min_score: float = 0.5) -> list:
     """현재 아이디어와 가장 유사한 과거 투표 K개 반환 (BM25). CEO가 선택한 비판만."""
     history = load_vote_history()
@@ -1001,6 +1256,11 @@ elif phase == 3:
                     "검증 장비, 자율주행 토탈 솔루션, 글로벌 OEM B2B)과 맞닿는 부분을 우선 짚고, "
                     "우리 팀의 실제 제품·고객·거점·강점에 비추어 실행 가능성을 평가하세요. "
                     "회사 사업과 무관한 아이디어면 그 점도 솔직히 지적하세요.\n\n"
+                    "[도구 사용 지침]\n"
+                    "필요할 때 다음 도구를 호출해서 회사 현실을 정확히 확인하세요. "
+                    "특히 아이디어가 어떤 자사 제품과 매칭되는지 판단할 때 get_aceworks_products를 활용하세요. "
+                    "회사 현황(거점, 파트너, 경쟁 위치 등)이 판단에 필요하면 get_company_facts를 호출하세요. "
+                    "도구는 한 번에 1~3회 호출 가능하며, 필요 없으면 호출하지 않아도 됩니다.\n\n"
                     "당신의 성격과 배경:\n"
                     "- 자율주행 및 AI 소프트웨어 개발 현장을 직접 뛰어온 실무형 리더다.\n"
                     "- 비평가들의 이론을 존중하지만 한국 시장과 실제 납품 현실이 다르다는 걸 안다.\n"
@@ -1056,17 +1316,34 @@ elif phase == 3:
                     "⑤ 우리 팀에게 한 마디 (지시사항, 짧고 강하게)"
                 )
                 try:
-                    verdict = call_groq(
+                    verdict, tool_log = call_groq_with_tools(
                         [
                             {"role": "system", "content": judge_system},
                             {"role": "user", "content": judge_prompt},
                         ],
+                        tools=ACEWORKS_TOOLS,
                         temperature=0.6,
                         max_tokens=2000,
                         model=MODEL_HEAVY,
+                        max_rounds=4,
                     )
+                    st.session_state["judge_tool_log"] = tool_log
                 except Exception as e:
-                    verdict = f"오류: {e}"
+                    # tool calling 실패 시 일반 호출로 폴백
+                    try:
+                        verdict = call_groq(
+                            [
+                                {"role": "system", "content": judge_system},
+                                {"role": "user", "content": judge_prompt},
+                            ],
+                            temperature=0.6,
+                            max_tokens=2000,
+                            model=MODEL_HEAVY,
+                        )
+                        st.session_state["judge_tool_log"] = []
+                    except Exception as e2:
+                        verdict = f"오류: {e2}"
+                        st.session_state["judge_tool_log"] = []
 
                 # 가치 태깅 → 누적 학습
                 new_votes = []
@@ -1107,6 +1384,14 @@ elif phase == 3:
             f"</div>",
             unsafe_allow_html=True,
         )
+        tlog = st.session_state.get("judge_tool_log", []) or []
+        if tlog:
+            with st.expander(f"🔧 판결자가 호출한 도구 ({len(tlog)}회)"):
+                for i, t in enumerate(tlog, 1):
+                    st.markdown(
+                        f"**{i}. `{t['name']}`** — args: `{json.dumps(t.get('args',{}), ensure_ascii=False)}`"
+                    )
+                    st.code(t.get("result_preview", ""), language="text")
         st.markdown("---")
         if st.button("🔄 다른 아이디어로 다시", key="reset_btn", type="primary"):
             reset_all()

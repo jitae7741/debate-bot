@@ -1,0 +1,160 @@
+{
+  "company": {
+    "name": "에이스웍스 코리아",
+    "name_en": "AceWorks Korea",
+    "founded": "2024 (컨트롤웍스 + 에이스랩 합병)",
+    "values": ["Agile (빠르게)", "Cost-conscious (효율적으로)", "Proven (검증된)"],
+    "identity": "미래 모빌리티 제어 기술의 핵심 파트너. 친환경/자율주행 제어 기술을 글로벌 모빌리티 기업에 공급하는 한국 모빌리티 테크 B2B 엔지니어링 회사.",
+    "scale": {
+      "employees": "90+",
+      "products": "20+",
+      "facilities": 3,
+      "cumulative_b2b_customers": "300+",
+      "cumulative_individual_customers": "3000+",
+      "revenue_growth": "2021년 대비 3배 이상"
+    },
+    "locations": [
+      {"city": "서울 강남", "type": "본사"},
+      {"city": "용인 ATC", "type": "R&D / 자율주행 시험"},
+      {"city": "청주 오창", "type": "R&D 센터"},
+      {"city": "대구", "type": "지방 거점"},
+      {"city": "광주", "type": "지방 거점"},
+      {"city": "미국 LA (Torrance)", "type": "해외 사무소", "year": 2023}
+    ],
+    "global_partners": [
+      {"name": "Vector", "country": "독일", "domain": "자동차 임베디드 도구"},
+      {"name": "Robosense", "country": "중국", "domain": "LiDAR 센서"}
+    ]
+  },
+  "products": [
+    {
+      "id": "inverter_mcu_hils",
+      "name": "Inverter/MCU HILS",
+      "domain": "EV",
+      "category": "파워트레인 HILS",
+      "description": "전기차 인버터·MCU(Motor Control Unit) 검증용 HILS"
+    },
+    {
+      "id": "obc_hils",
+      "name": "OBC HILS",
+      "domain": "EV",
+      "category": "파워트레인 HILS",
+      "description": "On-Board Charger 검증 HILS"
+    },
+    {
+      "id": "bms_hils",
+      "name": "BMS HILS",
+      "domain": "EV",
+      "category": "파워트레인 HILS",
+      "description": "Battery Management System HILS — 셀 256개 ±1mV 정확도",
+      "spec_highlight": "256셀 ±1mV"
+    },
+    {
+      "id": "ldc_bhdc_hils",
+      "name": "LDC/BHDC HILS",
+      "domain": "EV",
+      "category": "파워트레인 HILS",
+      "description": "Low-voltage DC-DC / Bidirectional High-voltage DC-DC 컨버터 HILS"
+    },
+    {
+      "id": "vcu_hils",
+      "name": "VCU HILS",
+      "domain": "EV",
+      "category": "파워트레인 HILS",
+      "description": "Vehicle Control Unit HILS — CarMaker/PreScan 연동"
+    },
+    {
+      "id": "ecf",
+      "name": "eCF",
+      "domain": "EV",
+      "category": "열관리/보조",
+      "description": "전동 쿨링 팬 제어 솔루션"
+    },
+    {
+      "id": "ecomp",
+      "name": "eCOMP",
+      "domain": "EV",
+      "category": "열관리/보조",
+      "description": "전동 컴프레서 — 10,000 rpm PMSM"
+    },
+    {
+      "id": "bpcu",
+      "name": "BPCU",
+      "domain": "EV",
+      "category": "열관리/보조",
+      "description": "Body Pump Control Unit — 150,000 rpm"
+    },
+    {
+      "id": "fcu_hils",
+      "name": "FCU HILS",
+      "domain": "hydrogen",
+      "category": "수소 연료전지",
+      "description": "Fuel Cell Control Unit HILS"
+    },
+    {
+      "id": "hmu_hils",
+      "name": "HMU HILS",
+      "domain": "hydrogen",
+      "category": "수소 연료전지",
+      "description": "Hydrogen Management Unit HILS"
+    },
+    {
+      "id": "ebs_hils",
+      "name": "EBS HILS",
+      "domain": "commercial_vehicle",
+      "category": "상용차",
+      "description": "Electronic Brake System HILS — 중대형 트럭, 수소트럭"
+    },
+    {
+      "id": "dashcam_kit",
+      "name": "Dashcam 개발 키트",
+      "domain": "vision",
+      "category": "비전/모니터링",
+      "description": "빌트인 카메라(Dashcam) 개발 키트"
+    },
+    {
+      "id": "dms_hils",
+      "name": "DMS HILS",
+      "domain": "vision",
+      "category": "비전/모니터링",
+      "description": "Driver Monitoring System HILS"
+    },
+    {
+      "id": "ldm_hils",
+      "name": "LDM HILS",
+      "domain": "lighting",
+      "category": "조명",
+      "description": "LED Drive Module HILS"
+    },
+    {
+      "id": "multi_domain_hil",
+      "name": "Multi-Domain HIL",
+      "domain": "integration",
+      "category": "통합 HILS",
+      "description": "여러 도메인을 통합한 HIL 시뮬레이션"
+    },
+    {
+      "id": "ad_full_stack",
+      "name": "자율주행 풀스택 솔루션",
+      "domain": "autonomous_driving",
+      "category": "자율주행 토탈 솔루션",
+      "description": "인지/측위/판단/제어, 시뮬레이션, 데이터 수집/검증 — 자율주행 전 영역 커버 (에이스랩 유산)"
+    }
+  ],
+  "tool_integrations": [
+    "NI VeriStand", "NI TestStand", "ECU-TEST",
+    "CarMaker", "CarSim", "TruckSim", "Simulink",
+    "Vector VT 시스템", "PreScan"
+  ],
+  "customer_profile": {
+    "primary": "글로벌 OEM, 1차 부품사",
+    "key_markets": ["한국", "일본", "미국", "중국"],
+    "user_type": "고객 엔지니어 직접 사용 — 임베디드 HW/SW 검증, 모델링, FPGA 기반 실시간 시뮬레이션 깊이 요구"
+  },
+  "competitive_position": {
+    "domestic": "한국 EV 검증 HILS 시장 1위 (컨트롤웍스 유산)",
+    "ad_solution": "자율주행 토탈 솔루션 (에이스랩 유산)",
+    "global_competitors": ["NI", "dSPACE"],
+    "competitive_advantages": ["가격 경쟁력", "맞춤화", "납기"]
+  }
+}
