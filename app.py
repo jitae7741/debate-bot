@@ -9,6 +9,7 @@ import requests
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from groq import Groq
+from rank_bm25 import BM25Okapi
 
 try:
     from dotenv import load_dotenv
@@ -33,6 +34,19 @@ GROQ_API_KEY = _load_key("GROQ_API_KEY")
 TAVILY_API_KEY = _load_key("TAVILY_API_KEY")
 VOTES_FILE = "votes_history.json"
 PERSONA_CACHE_FILE = "personas_cache.json"
+
+# 모델 레지스트리 — 단계별 최적 모델
+# gpt-oss-120b가 이 키에서 한국어 품질 최상 (실 테스트 검증). 폴백은 자동.
+MODEL_HEAVY = "openai/gpt-oss-120b"        # 토론·판결·요약·페르소나 합성
+MODEL_BRAINSTORM = "openai/gpt-oss-120b"   # 비평가 후보 추천 (JSON)
+MODEL_LIGHT = "llama-3.1-8b-instant"       # 가치 태깅 (가벼운 분류)
+# 폴백 사다리 — 위에서부터 시도, 한도 초과/오류 시 다음 모델
+FALLBACK_CHAIN = [
+    "openai/gpt-oss-120b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+]
 
 COLOR_POOL = [
     "#FF3B30", "#4285F4", "#F4A261", "#30D158", "#0A84FF",
@@ -225,19 +239,26 @@ def save_persona_cache(cache: dict):
 # ── LLM/검색 코어 ────────────────────────────────────
 
 def clean_response(text: str) -> str:
+    if not text:
+        return ""
+    # Qwen 등 reasoning 모델의 <think>...</think> 블록 제거
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # 중국어·일본어·키릴·전각문자 제거 (한국어/영어/숫자만 남김)
     cleaned = re.sub(r"[一-鿿぀-ヿЀ-ӿ㐀-䶿＀-￯]", "", text)
     return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
-def call_groq(messages, temperature: float = 0.8, max_tokens: int = 900) -> str:
+def call_groq(messages, temperature: float = 0.8, max_tokens: int = 1500, model: str = None) -> str:
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY 환경변수가 설정되지 않았습니다. .env 또는 셸에 export 하세요.")
     client = Groq(api_key=GROQ_API_KEY)
+    # 지정 모델을 맨 앞에 두고 폴백 사다리로
+    chain = [model] + [m for m in FALLBACK_CHAIN if m != model] if model else FALLBACK_CHAIN
     last_err = None
-    for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+    for m in chain:
         try:
             resp = client.chat.completions.create(
-                model=model,
+                model=m,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -246,10 +267,11 @@ def call_groq(messages, temperature: float = 0.8, max_tokens: int = 900) -> str:
         except Exception as e:
             last_err = e
             err = str(e).lower()
-            if "429" in str(e) or "rate_limit" in err or "quota" in err:
+            # rate limit, 모델 없음, decommissioned → 다음 모델로
+            if any(k in err for k in ["429", "rate_limit", "quota", "404", "decommission", "not found"]):
                 continue
             raise
-    raise RuntimeError(f"모든 Groq 모델 한도 초과: {last_err}")
+    raise RuntimeError(f"모든 Groq 모델 실패: {last_err}")
 
 
 def _extract_json(text: str):
@@ -286,7 +308,7 @@ def _record_search_error(msg: str):
         _SEARCH_ERRORS.append(msg[:300])
 
 
-def search_tavily(query: str, max_results: int = 4) -> str:
+def search_tavily(query: str, max_results: int = 8, depth: str = "advanced") -> str:
     if not TAVILY_API_KEY:
         _record_search_error("TAVILY_API_KEY 미설정 — .env 또는 셸 export 필요")
         return ""
@@ -296,11 +318,11 @@ def search_tavily(query: str, max_results: int = 4) -> str:
             json={
                 "api_key": TAVILY_API_KEY,
                 "query": query,
-                "search_depth": "basic",
+                "search_depth": depth,
                 "max_results": max_results,
-                "include_answer": True,
+                "include_answer": "advanced",
             },
-            timeout=12,
+            timeout=20,
         )
         if resp.status_code == 401:
             _record_search_error("Tavily 인증 실패 (401) — API 키 무효/만료")
@@ -312,15 +334,17 @@ def search_tavily(query: str, max_results: int = 4) -> str:
         data = resp.json()
         lines = []
         if data.get("answer"):
-            lines.append(f"핵심 요약: {str(data['answer'])[:500]}")
+            lines.append(f"핵심 요약: {str(data['answer'])[:800]}")
         for r in data.get("results", [])[:max_results]:
             title = str(r.get("title", "")).strip()
-            content = str(r.get("content", "")).strip()[:300]
+            content = str(r.get("content", "")).strip()[:500]
+            url = str(r.get("url", "")).strip()
             if title or content:
-                lines.append(f"• {title}: {content}")
+                src = f" ({url})" if url else ""
+                lines.append(f"• {title}{src}: {content}")
         return "\n".join(lines)
     except requests.Timeout:
-        _record_search_error("Tavily 타임아웃 (12초) — 네트워크 또는 API 응답 지연")
+        _record_search_error("Tavily 타임아웃 (20초) — 네트워크 또는 API 응답 지연")
         return ""
     except requests.RequestException as e:
         _record_search_error(f"Tavily 네트워크 오류: {type(e).__name__}: {e}")
@@ -330,12 +354,14 @@ def search_tavily(query: str, max_results: int = 4) -> str:
         return ""
 
 
-def parallel_search(queries: dict, timeout: int = 20) -> dict:
+def parallel_search(queries: dict, timeout: int = 30, max_results: int = 8, depth: str = "advanced") -> dict:
     results = {k: "" for k in queries}
     if not queries:
         return results
     with ThreadPoolExecutor(max_workers=min(8, len(queries))) as ex:
-        future_to_key = {ex.submit(search_tavily, q): k for k, q in queries.items()}
+        future_to_key = {
+            ex.submit(search_tavily, q, max_results, depth): k for k, q in queries.items()
+        }
         for fut in as_completed(future_to_key):
             k = future_to_key[fut]
             try:
@@ -348,13 +374,18 @@ def parallel_search(queries: dict, timeout: int = 20) -> dict:
 # ── 파이프라인 단계 ─────────────────────────────────────
 
 def research_topic(idea: str) -> tuple:
-    """주제 광범위 리서치 → (raw_search, summary)"""
+    """주제 광범위 리서치 → (raw_search, summary). 한·영 쿼리 병행."""
     _SEARCH_ERRORS.clear()
     queries = {
-        "news": f"{idea} latest news 2025 2026",
-        "tech": f"{idea} technical analysis market trends",
-        "critique": f"{idea} criticism risks failure cases",
-        "academic": f"{idea} research paper academic study",
+        # 영어 — 글로벌 동향·학술·해외 리스크
+        "news_en": f"{idea} latest news 2025 2026",
+        "tech_en": f"{idea} technical analysis market trends",
+        "critique_en": f"{idea} criticism risks failure cases",
+        "academic_en": f"{idea} research paper academic study",
+        # 한국어 — 한국 시장·한국어 보도·국내 사례
+        "news_kr": f"{idea} 최신 뉴스 2025 2026 한국",
+        "industry_kr": f"{idea} 업계 동향 시장 분석",
+        "risk_kr": f"{idea} 리스크 실패 사례 비판",
     }
     results = parallel_search(queries)
     raw = "\n\n".join(f"[{k.upper()}]\n{v}" for k, v in results.items() if v)
@@ -369,12 +400,13 @@ def research_topic(idea: str) -> tuple:
         )
 
     summary_prompt = (
-        f"다음은 '{idea[:300]}'에 대한 실시간 외부 검색 결과(뉴스·기술·비판·학술)입니다.\n\n"
-        f"{raw[:5500]}\n\n"
+        f"다음은 '{idea[:300]}'에 대한 실시간 외부 검색 결과(한·영 병행, 뉴스·기술·비판·학술)입니다.\n\n"
+        f"{raw[:9000]}\n\n"
         "위 자료를 바탕으로 한국어로 요약하세요. 다음을 포함:\n"
-        "1) 주제의 핵심 맥락 (3~4문장)\n"
-        "2) 주요 논쟁점·리스크 (3~5개)\n"
-        "3) 최근 동향과 사실 (2~3개)\n\n"
+        "1) 주제의 핵심 맥락 (3~4문장, 시장 규모·플레이어·핵심 기술 포함)\n"
+        "2) 주요 논쟁점·리스크 (4~6개, 각 항목에 구체적 사례·숫자 1개 이상)\n"
+        "3) 최근 동향과 사실 (3~4개, 날짜·출처가 있는 것만)\n"
+        "4) 한국 시장 특수성 (2~3개, 검색 결과에 한국 관련 정보가 있으면)\n\n"
         "마크다운 표기(**, ##, ---) 금지. 평문 + 줄바꿈만 사용. "
         "검색에 없는 사실은 추가하지 마세요. 모르면 모른다고 쓰세요."
     )
@@ -382,7 +414,8 @@ def research_topic(idea: str) -> tuple:
         summary = call_groq(
             [{"role": "user", "content": summary_prompt}],
             temperature=0.3,
-            max_tokens=1000,
+            max_tokens=1500,
+            model=MODEL_HEAVY,
         )
     except Exception as e:
         summary = f"요약 생성 실패: {e}"
@@ -414,7 +447,8 @@ def brainstorm_critics(idea: str, summary: str) -> list:
         resp = call_groq(
             [{"role": "user", "content": prompt}],
             temperature=0.6,
-            max_tokens=1400,
+            max_tokens=1800,
+            model=MODEL_BRAINSTORM,
         )
         data = _extract_json(resp)
         if isinstance(data, list):
@@ -472,7 +506,8 @@ def synthesize_persona(name: str, role: str, why: str, idea: str, search_data: s
         resp = call_groq(
             [{"role": "user", "content": prompt}],
             temperature=0.5,
-            max_tokens=1600,
+            max_tokens=2000,
+            model=MODEL_HEAVY,
         )
         data = _extract_json(resp)
         if (
@@ -489,7 +524,7 @@ def synthesize_persona(name: str, role: str, why: str, idea: str, search_data: s
                 "icon": str(data.get("icon", "💬"))[:4],
                 "critique_angle": str(data.get("critique_angle", why))[:200],
                 "system_prompt": data["system_prompt"],
-                "search_basis": search_data[:1200] if has_search else "",
+                "search_basis": search_data[:2500] if has_search else "",
             }
     except Exception:
         pass
@@ -511,7 +546,7 @@ def synthesize_persona(name: str, role: str, why: str, idea: str, search_data: s
             "추측이나 만들어낸 인용은 사용하지 않습니다. 모르는 영역은 솔직히 인정합니다.\n\n"
             "5~6문장으로 답하되 추상적 일반론 금지, 구체 사실·숫자·사례 최소 1개 포함."
         ),
-        "search_basis": search_data[:1200] if has_search else "",
+        "search_basis": search_data[:2500] if has_search else "",
     }
 
 
@@ -520,12 +555,21 @@ def build_personas(candidates: list, idea: str) -> list:
     if not candidates:
         return []
 
-    # 1) 검색 병렬
-    queries = {
-        c["name"]: f'"{c["name"]}" {c.get("role","")} opinion view critique recent statements'
-        for c in candidates
-    }
-    search_results = parallel_search(queries)
+    # 1) 검색 병렬 — 한·영 병행 (한국 인물 한국어 검색 누수 방지)
+    def _is_korean_name(name: str) -> bool:
+        return bool(re.search(r"[가-힣]", name or ""))
+
+    queries = {}
+    for c in candidates:
+        nm = c["name"]
+        role = c.get("role", "")
+        if _is_korean_name(nm):
+            # 한국 인물: 한국어 검색 우선
+            queries[nm] = f'{nm} {role} 인터뷰 발언 의견 최근'
+        else:
+            # 외국 인물: 영어 검색
+            queries[nm] = f'"{nm}" {role} opinion view critique recent statements 2024 2025'
+    search_results = parallel_search(queries, max_results=6, depth="advanced")
 
     # 2) 페르소나 합성 병렬 (max_workers=4 — Groq rate limit 보호)
     cache = load_persona_cache()
@@ -583,7 +627,7 @@ def debate_call(persona: dict, conversation_so_far: str, my_prompt: str, idea: s
             f"인용은 검색에 명시된 것만 사용]\n{persona['search_basis']}"
         )
     if summary:
-        ctx += f"\n\n[주제에 대한 종합 리서치 요약]\n{summary[:1500]}"
+        ctx += f"\n\n[주제에 대한 종합 리서치 요약]\n{summary[:2500]}"
 
     base = f"아이디어: {idea}{ctx}"
     user_content = (
@@ -597,8 +641,51 @@ def debate_call(persona: dict, conversation_so_far: str, my_prompt: str, idea: s
             {"role": "user", "content": user_content},
         ],
         temperature=0.85,
-        max_tokens=900,
+        max_tokens=1500,
+        model=MODEL_HEAVY,
     )
+
+
+# ── RAG: 과거 투표 이력 기반 유사 토픽 비판 검색 ──────────────────
+
+def _korean_tokenize(text: str) -> list:
+    """BM25용 경량 한국어 토크나이저. 형태소 없이 공백+구두점 분리, 짧은 토큰 제거."""
+    if not text:
+        return []
+    # 한국어/영어/숫자만 남기고 분리
+    tokens = re.findall(r"[가-힣]+|[a-zA-Z]+|[0-9]+", text.lower())
+    return [t for t in tokens if len(t) >= 2]
+
+
+def retrieve_similar_votes(idea: str, k: int = 3, min_score: float = 0.5) -> list:
+    """현재 아이디어와 가장 유사한 과거 투표 K개 반환 (BM25). CEO가 선택한 비판만."""
+    history = load_vote_history()
+    if not history or not idea.strip():
+        return []
+    # 각 과거 투표를 "topic + argument" 합쳐서 인덱싱
+    docs = [f"{v.get('topic','')} {v.get('argument','')}" for v in history]
+    tokenized_docs = [_korean_tokenize(d) for d in docs]
+    # 빈 문서 제거
+    valid_idx = [i for i, t in enumerate(tokenized_docs) if t]
+    if not valid_idx:
+        return []
+    valid_docs = [tokenized_docs[i] for i in valid_idx]
+    try:
+        bm25 = BM25Okapi(valid_docs)
+        query_tokens = _korean_tokenize(idea)
+        if not query_tokens:
+            return []
+        scores = bm25.get_scores(query_tokens)
+        ranked = sorted(zip(valid_idx, scores), key=lambda x: -x[1])
+        out = []
+        for orig_i, score in ranked[:k]:
+            if score < min_score:
+                break
+            out.append({**history[orig_i], "_relevance": round(float(score), 2)})
+        return out
+    except Exception:
+        return []
+
 
 
 def tag_argument_values(speaker: str, argument: str) -> list:
@@ -615,6 +702,7 @@ def tag_argument_values(speaker: str, argument: str) -> list:
             [{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=200,
+            model=MODEL_LIGHT,
         )
         data = _extract_json(resp)
         if isinstance(data, list):
@@ -934,18 +1022,38 @@ elif phase == 3:
                     f"\n\n[누적 가치관 태그 — 이 팀이 반복적으로 중요시한 가치]\n{tag_summary}"
                 )
 
+                # RAG: 현재 아이디어와 유사한 과거 토픽에서 대표가 선택한 비판 검색
+                similar_votes = retrieve_similar_votes(idea, k=3, min_score=0.5)
+                rag_section = ""
+                if similar_votes:
+                    rag_examples = []
+                    for sv in similar_votes:
+                        topic = sv.get("topic", "")[:150]
+                        speaker = sv.get("speaker", "")
+                        argument = sv.get("argument", "")[:500]
+                        tags = ", ".join(sv.get("value_tags", []) or [])
+                        rag_examples.append(
+                            f"[과거 주제: {topic}]\n선택된 비판 ({speaker}): {argument}\n가치 태그: {tags}"
+                        )
+                    rag_section = (
+                        "\n\n[유사 과거 토픽에서 대표가 선택한 비판 — 이 톤과 각도를 참고]\n"
+                        + "\n\n".join(rag_examples)
+                    )
+
                 judge_prompt = (
                     f"아이디어: {idea}\n\n"
                     f"전체 토론 ({len(log)}명 참여):\n{full_log}"
-                    f"{voted_section}\n\n"
+                    f"{voted_section}"
+                    f"{rag_section}\n\n"
                     "위 토론을 바탕으로 에이스웍스 코리아 대표로서 최종 판결을 내려주세요. "
-                    "팀이 선택한 논점은 특별히 무겁게 다루고, 누적 가치관도 판결 기조에 반영하세요.\n\n"
+                    "팀이 선택한 논점은 특별히 무겁게 다루고, 누적 가치관도 판결 기조에 반영하세요. "
+                    "유사 과거 토픽 비판이 제시되어 있다면 그 판단 톤(어떤 각도를 중시했는지)을 참고하세요.\n\n"
                     "[판결문 구조 — 평문, 줄바꿈으로 단락 구분, 마크다운 금지]\n"
                     "① 토론 핵심 쟁점 요약 (2~3줄)\n"
                     "② 비평가 중 가장 타당했던 논점 (혹은 복합 판단)\n"
-                    "③ 사업적 관점 최종 판단 (실행 가능성 중심)\n"
+                    "③ 사업적 관점 최종 판단 (실행 가능성 중심, 우리 제품·고객·거점 기준)\n"
                     "④ 결론: 채택 / 수정 후 채택 / 기각 — 이유 한 문장\n"
-                    "⑤ 우리 팀에게 한 마디 (지시사항)"
+                    "⑤ 우리 팀에게 한 마디 (지시사항, 짧고 강하게)"
                 )
                 try:
                     verdict = call_groq(
@@ -954,7 +1062,8 @@ elif phase == 3:
                             {"role": "user", "content": judge_prompt},
                         ],
                         temperature=0.6,
-                        max_tokens=1400,
+                        max_tokens=2000,
+                        model=MODEL_HEAVY,
                     )
                 except Exception as e:
                     verdict = f"오류: {e}"
